@@ -101,3 +101,50 @@ def test_stat_shows_index_path(tools):
     result = t.execute(action="stat")
     assert "index path:" in result.output
     assert "MEMORY.md" in result.output
+
+
+def test_archive_and_restore_actions(tools):
+    t = _tool(tools)
+    _store(t, "tool-archive", "archive action body")
+    archived = t.execute(action="archive", name="tool-archive")
+    assert not archived.error
+    assert "Archived" in archived.output
+
+    found = t.execute(action="find", query="tool-archive", status="archived")
+    assert "tool-archive" in found.output
+
+    restored = t.execute(action="restore", name="tool-archive")
+    assert not restored.error
+    assert "Restored" in restored.output
+    active = t.execute(action="find", query="tool-archive")
+    assert "tool-archive" in active.output
+
+
+def test_find_limit_reports_truncation(tools):
+    t = _tool(tools)
+    for i in range(3):
+        _store(t, f"limit-probe-{i}", "same body", title=f"Limit {i}")
+    result = t.execute(action="find", query="limit-probe", limit=1)
+    assert "showing first 1" in result.output
+    assert "limit-probe-0" in result.output
+
+
+def test_list_limit_reports_total(tools):
+    t = _tool(tools)
+    for i in range(3):
+        _store(t, f"list-limit-{i}", "body", title=f"List {i}")
+    result = t.execute(action="list", memory_type="fact", limit=1)
+    assert "3 memory entries" in result.output
+    assert "showing 1" in result.output
+
+
+def test_update_rejects_type_change_and_noop(tools):
+    t = _tool(tools)
+    _store(t, "update-guard")
+    typed = t.execute(action="update", name="update-guard", memory_type="skill")
+    assert typed.error
+    assert "memory_type cannot be changed" in typed.output
+
+    noop = t.execute(action="update", name="update-guard")
+    assert noop.error
+    assert "no fields to update" in noop.output

@@ -349,7 +349,7 @@ class MemoryStore:
                 results.append(fm)
         return results
 
-    def _iter_archived(self, type_: str | None = None) -> list[dict]:
+    def _iter_archived(self, type_: str | None = None, *, include_body: bool = False) -> list[dict]:
         results: list[dict] = []
         types = [type_] if type_ else list(MEMORY_TYPES)
         for t in types:
@@ -361,11 +361,13 @@ class MemoryStore:
             for f in tdir.iterdir():
                 if not f.name.endswith(".md") or f.name.endswith(".tmp"):
                     continue
-                fm, _ = self._load_file(f)
+                fm, body = self._load_file(f)
                 if not fm:
                     continue
                 fm.setdefault("type", t)
                 fm["_path"] = str(f)
+                if include_body:
+                    fm["_body"] = body
                 results.append(fm)
         return results
 
@@ -465,20 +467,25 @@ class MemoryStore:
     # ── find / read / update / delete / list / stat ──
 
     def find(self, query: str, type_: str | None = None, status: str | None = None,
-             limit: int = 20) -> list[dict]:
-        """描述/正文召回：frontmatter 与正文都匹配；正文命中同样返回。
+             limit: int | None = 20, offset: int = 0) -> list[dict]:
+        """描述/正文召回：frontmatter 与正文都匹配；status=archived 时检索归档。
 
-        返回按 usage_count 倒序（active/stale，不含 archived）。不递增 usage（真实使用以 read 为准）。
+        返回按 usage_count 倒序（未指定 status 时不含 archived）。不递增 usage。
         """
         query = (query or "").strip().lower()
         if not query:
             raise ValueError("query is required for find")
-        with self._lock:
-            entries = self._iter_entries(type_, include_body=True)
+        offset = max(0, int(offset or 0))
+        if status == STATUS_ARCHIVED:
+            with self._lock:
+                entries = self._iter_archived(type_, include_body=True)
+        else:
+            with self._lock:
+                entries = self._iter_entries(type_, include_body=True)
         matched = []
         for fm in entries:
             s = fm.get("status", STATUS_ACTIVE)
-            if s == STATUS_ARCHIVED:
+            if status is None and s == STATUS_ARCHIVED:
                 continue
             if status is not None and s != status:
                 continue
@@ -492,7 +499,8 @@ class MemoryStore:
             if query in hay:
                 matched.append(fm)
         matched.sort(key=lambda e: (e.get("usage_count", 0), str(e.get("updated", ""))), reverse=True)
-        return [self._public(fm) for fm in matched[:limit]]
+        sliced = matched[offset:] if limit is None else matched[offset:offset + max(0, int(limit))]
+        return [self._public(fm) for fm in sliced]
 
     def read(self, name: str) -> tuple[dict, str]:
         """读条目全文，递增 usage_count / last_used。返回 (fm, body)。"""

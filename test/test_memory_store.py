@@ -151,10 +151,10 @@ class TestFindRead:
     def test_find_excludes_archived(self, store):
         store.store(type_="fact", name="gone", title="Gone Entry", content="x")
         store.archive("gone")
-        # find 只召回 active/stale，归档条目不参与召回（含显式 status=archived）
+        # find 默认只召回 active/stale；显式 status=archived 时检索归档
         assert store.find("gone") == []
-        assert store.find("gone", status="archived") == []
-        # 归档条目走 list(status="archived")
+        assert store.find("gone", status="archived")[0]["name"] == "gone"
+        # 归档条目也可走 list(status="archived")
         assert store.list(status="archived")[0]["name"] == "gone"
 
     def test_read_missing_raises(self, store):

@@ -43,13 +43,15 @@ class MemoryTool(Tool):
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["store", "find", "read", "update", "delete", "list", "stat", "consolidate"],
+                "enum": ["store", "find", "read", "update", "delete", "list", "stat",
+                         "consolidate", "archive", "restore"],
                 "description": (
                     "Operation type. store: create/replace an entry; find: list matching "
                     "entries by keyword; read: read an entry's full body; update: replace "
                     "content/metadata; delete: remove an entry; list: enumerate entries; "
                     "stat: memory statistics; consolidate: turn pending journal records "
-                    "into entries for the current workspace only."
+                    "into entries for the current workspace only; archive/restore: move "
+                    "an entry to/from archive."
                 ),
             },
             "memory_type": {
@@ -76,6 +78,14 @@ class MemoryTool(Tool):
                 "type": "string",
                 "enum": ["active", "stale", "archived"],
                 "description": "Status filter for find/list."
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max items for find/list (default 20/100)."
+            },
+            "offset": {
+                "type": "integer",
+                "description": "Pagination offset for find/list."
             },
             "title": {
                 "type": "string",
@@ -145,6 +155,10 @@ class MemoryTool(Tool):
                 return self._stat(kwargs)
             if action == "consolidate":
                 return self._consolidate()
+            if action == "archive":
+                return self._archive(kwargs)
+            if action == "restore":
+                return self._restore(kwargs)
             return ToolResult(f"Error: unknown action '{action}'", error=True)
         except Exception as e:
             return ToolResult(f"Error: {e}", error=True)
@@ -199,10 +213,14 @@ class MemoryTool(Tool):
         query = str(kwargs.get("query", "")).strip()
         if not query:
             return ToolResult("Error: query is required for find", error=True)
+        limit = int(kwargs.get("limit") or 20)
+        offset = max(0, int(kwargs.get("offset") or 0))
         results = self.store.find(
             query=query,
             type_=kwargs.get("memory_type"),
             status=kwargs.get("status"),
+            limit=limit,
+            offset=offset,
         )
         if not results:
             return ToolResult(
@@ -220,6 +238,9 @@ class MemoryTool(Tool):
             note = self.store.stale_note(entry)
             if note:
                 lines.append(f"  {note}")
+        if len(results) >= limit:
+            lines.append("")
+            lines.append(f"(showing first {limit}; use limit/offset to see more)")
         lines.append("")
         lines.append('Hint: use memory(action="read", name="<name>") to read an entry\'s full body.')
         return ToolResult(UNTRUSTED_DATA_BEGIN + "\n".join(lines) + UNTRUSTED_DATA_END)
@@ -244,6 +265,13 @@ class MemoryTool(Tool):
         name = (kwargs.get("name") or "").strip()
         if not name:
             return ToolResult("Error: name is required for update", error=True)
+        if kwargs.get("memory_type") is not None:
+            return ToolResult(
+                "Error: memory_type cannot be changed by update; create a new entry instead",
+                error=True,
+            )
+        if not any(k in kwargs for k in ("title", "description", "content", "tags", "refs", "source", "status")):
+            return ToolResult("Error: no fields to update", error=True)
         result = self.store.update(
             name,
             title=kwargs.get("title"),
@@ -288,22 +316,46 @@ class MemoryTool(Tool):
     # ─── list ──────────────────────────────────────────
 
     def _list(self, kwargs: dict) -> ToolResult:
-        results = self.store.list(type_=kwargs.get("memory_type"), status=kwargs.get("status"))
-        if not results:
+        all_results = self.store.list(type_=kwargs.get("memory_type"), status=kwargs.get("status"))
+        if not all_results:
             return ToolResult("No memory entries.")
-        lines = [f"{len(results)} memory entr{'y' if len(results) == 1 else 'ies'}:"]
+        limit = int(kwargs.get("limit") or 100)
+        offset = max(0, int(kwargs.get("offset") or 0))
+        results = all_results[offset:offset + max(0, limit)]
+        lines = [f"{len(all_results)} memory entr{'y' if len(all_results) == 1 else 'ies'}:"]
         for entry in results:
             status = entry.get("status", "active")
             marker = f"[{entry['type']}/{status}]"
             lines.append(f"{marker} {entry.get('title', entry['name'])} — {entry.get('description', '')}")
             lines.append(f"  name: {entry['name']} | updated: {entry.get('updated', '')} | uses: {entry.get('usage_count', 0)}")
-        return ToolResult("\n".join(lines))
+        if len(results) < len(all_results):
+            lines.append(f"(showing {len(results)}; use limit/offset for more)")
+        return ToolResult(UNTRUSTED_DATA_BEGIN + "\n".join(lines) + UNTRUSTED_DATA_END)
+
+    def _archive(self, kwargs: dict) -> ToolResult:
+        name = (kwargs.get("name") or "").strip()
+        if not name:
+            return ToolResult("Error: name is required for archive", error=True)
+        self.store.archive(name)
+        self._audit("archive", name, "", {})
+        return ToolResult(f"Archived '{name}'")
+
+    def _restore(self, kwargs: dict) -> ToolResult:
+        name = (kwargs.get("name") or "").strip()
+        if not name:
+            return ToolResult("Error: name is required for restore", error=True)
+        self.store.restore(name)
+        self._audit("restore", name, "", {})
+        return ToolResult(f"Restored '{name}'")
 
     # ─── stat ──────────────────────────────────────────
 
     def _stat(self, _kwargs: dict) -> ToolResult:
         stats = self.store.stat()
         pending = self.journal.pending_count()
+        if self.workspace_uuid:
+            from core.memory_pipeline import _journal_dirs
+            pending = sum(Journal(str(d)).pending_count() for d in _journal_dirs(self.workspace_uuid))
         by_type = "  ".join(f"{t}: {stats['by_type'][t]}" for t in MEMORY_TYPES)
         lines = [
             "Memory statistics:",
