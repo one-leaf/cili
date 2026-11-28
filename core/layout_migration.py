@@ -167,6 +167,7 @@ def _migrate_memory(data_dir: Path) -> None:
     if extract.is_dir():
         for f in extract.glob("*.json"):
             _move(f, data_dir / "runtime" / "memory" / "sessions" / f.stem / "pointer.json")
+        shutil.rmtree(extract, ignore_errors=True)
     cursor = memory / ".cursor"
     if cursor.is_file():
         _move(cursor, data_dir / "runtime" / "memory" / "sessions" / "_orphan" / ".cursor")

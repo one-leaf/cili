@@ -11,6 +11,8 @@ from typing import Any
 
 from core.config import get_workspace_data_dir
 from core.memory_journal import Journal
+from core.workspace_layout import memory_session_state_dir
+from core.time_utils import now_str
 from core.memory_store import (
     MEMORY_TYPES,
     SOURCES,
@@ -114,7 +116,13 @@ class MemoryTool(Tool):
         )
         self.memory_dir = str(get_workspace_data_dir(workspace_uuid) / "memory")
         self.store = MemoryStore(self.memory_dir)
-        self.journal = Journal(self.memory_dir)
+        self.session_id = str(getattr(session, "session_id", "") or "")
+        # 手动 store 也进当前会话的 runtime journal；无 session（测试/系统）回退旧目录。
+        state_dir = (
+            memory_session_state_dir(workspace_uuid, self.session_id)
+            if workspace_uuid and self.session_id else self.memory_dir
+        )
+        self.journal = Journal(str(state_dir))
 
     # ─── public entry point ────────────────────────────
 
@@ -164,11 +172,14 @@ class MemoryTool(Tool):
         try:
             self.journal.append(
                 key=f"store:{result['name']}",
-                session_key=self.workspace_uuid or "",
+                session_key=self.session_id or self.workspace_uuid or "",
                 type_guess=type_,
+                title=str(kwargs.get("title") or ""),
+                description=str(kwargs.get("description") or ""),
                 content=f"[{type_}] {result['name']}: {kwargs.get('title', '')}",
+                tags=kwargs.get("tags"),
                 refs=kwargs.get("refs"),
-                source="user",
+                source=str(kwargs.get("source") or "user"),
                 integrated=True,
             )
         except Exception:
@@ -248,7 +259,26 @@ class MemoryTool(Tool):
         if not name:
             return ToolResult("Error: name is required for delete", error=True)
         result = self.store.delete(name)
+        self._audit("delete", name, result.get("type", ""), {})
         return ToolResult(f"Deleted {result['type']} '{name}'")
+
+    def _audit(self, action: str, name: str, type_: str, kwargs: dict) -> None:
+        """update/delete 也写会话 journal，保持写操作可审计。"""
+        try:
+            self.journal.append(
+                key=f"{action}:{name}:{now_str()}",
+                session_key=self.session_id or self.workspace_uuid or "",
+                type_guess=type_,
+                title=str(kwargs.get("title") or ""),
+                description=str(kwargs.get("description") or ""),
+                content=f"[{action}] {name}",
+                tags=kwargs.get("tags"),
+                refs=kwargs.get("refs"),
+                source="user",
+                integrated=True,
+            )
+        except Exception:
+            pass
 
     # ─── list ──────────────────────────────────────────
 
