@@ -49,7 +49,7 @@ class MemoryTool(Tool):
                     "entries by keyword; read: read an entry's full body; update: replace "
                     "content/metadata; delete: remove an entry; list: enumerate entries; "
                     "stat: memory statistics; consolidate: turn pending journal records "
-                    "into entries across all workspaces (cron/manual trigger)."
+                    "into entries for the current workspace only."
                 ),
             },
             "memory_type": {
@@ -312,23 +312,23 @@ class MemoryTool(Tool):
     # ─── consolidate（cron / 手动触发整合）────────────────
 
     def _consolidate(self) -> ToolResult:
-        from core.memory_service import consolidate_all
+        """只整合当前工作区；跨工作区整合由 cron/显式服务触发。"""
+        from core.memory_pipeline import run_consolidation
 
-        results = consolidate_all()
-        if not results:
+        if not self.workspace_uuid:
+            return ToolResult("No workspace context for consolidate.", error=True)
+        r = run_consolidation(self.workspace_uuid)
+        if not r:
             return ToolResult("No workspace memory to consolidate.")
-        lines = [f"Consolidated {len(results)} workspace(s):"]
-        for r in results:
-            if r.get("error"):
-                lines.append(f"- {r['workspace_uuid']}: error {r['error']}")
-                continue
-            applied = r.get("applied", [])
-            stores = sum(1 for a in applied if a["op"] == "store")
-            updates = sum(1 for a in applied if a["op"] == "update")
-            others = sum(1 for a in applied if a["op"] not in ("store", "update"))
-            lines.append(
-                f"- {r['workspace_uuid']}: processed {r.get('processed', 0)} record(s), "
-                f"{stores} stored, {updates} updated, {others} other, "
-                f"{r.get('archived', 0)} archived, pending {r.get('pending_after', 0)}"
-            )
-        return ToolResult("\n".join(lines))
+        if r.get("error"):
+            return ToolResult(f"Consolidation failed: {r['error']}")
+        applied = r.get("applied", [])
+        stores = sum(1 for a in applied if a["op"] == "store")
+        updates = sum(1 for a in applied if a["op"] == "update")
+        others = sum(1 for a in applied if a["op"] not in ("store", "update"))
+        return ToolResult(
+            f"Consolidated workspace {self.workspace_uuid}: "
+            f"processed {r.get('processed', 0)} record(s), "
+            f"{stores} stored, {updates} updated, {others} other, "
+            f"{r.get('archived', 0)} archived, pending {r.get('pending_after', 0)}"
+        )

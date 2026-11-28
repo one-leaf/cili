@@ -220,27 +220,25 @@ class TestMemoryToolListStat:
 class TestMemoryToolConsolidate:
     def test_consolidate_delegates(self, monkeypatch, tools, test_workspace):
         """consolidate 动作委托 core.memory_service.consolidate_all（方法内 import）。"""
-        from core import memory_service
+        from core import memory_pipeline
 
-        fake_result = [{
-            "workspace_uuid": "w-fake",
+        fake_result = {
             "processed": 2,
             "applied": [{"op": "store", "name": "a"}, {"op": "update", "name": "b"}],
             "archived": [],
             "pending_after": 0,
-            "committed": True,
-        }]
-        monkeypatch.setattr(memory_service, "consolidate_all", lambda **kw: fake_result)
+        }
+        monkeypatch.setattr(memory_pipeline, "run_consolidation", lambda *a, **kw: fake_result)
 
         result = _memory_tool(tools).execute(action="consolidate")
         assert not result.error
-        assert "w-fake" in result.output
+        assert "test-workspace" in result.output
         assert "1 stored, 1 updated" in result.output
 
     def test_consolidate_no_workspaces(self, monkeypatch, tools, test_workspace):
-        from core import memory_service
+        from core import memory_pipeline
 
-        monkeypatch.setattr(memory_service, "consolidate_all", lambda **kw: [])
+        monkeypatch.setattr(memory_pipeline, "run_consolidation", lambda *a, **kw: {})
         result = _memory_tool(tools).execute(action="consolidate")
         assert not result.error
         assert "No workspace memory to consolidate." in result.output
