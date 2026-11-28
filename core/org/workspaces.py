@@ -143,6 +143,8 @@ def apply_workspaces(
             (directory / ".cili" / "sessions").mkdir(parents=True, exist_ok=True)
             from core.layout_migration import write_layout_marker
             write_layout_marker(directory / ".cili")
+            (directory / ".cili" / "config" / "approval_rules").mkdir(parents=True, exist_ok=True)
+            (directory / ".cili" / "config" / "sensitive_words" / "rules").mkdir(parents=True, exist_ok=True)
             if not save_workspace_meta(uuid, config):
                 raise RuntimeError("工作区索引写入失败")
             if remote:

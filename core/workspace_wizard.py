@@ -781,6 +781,8 @@ def create_workspaces(
             (data_dir / "sessions").mkdir(parents=True, exist_ok=True)
             from core.layout_migration import write_layout_marker
             write_layout_marker(data_dir)
+            (data_dir / "config" / "approval_rules").mkdir(parents=True, exist_ok=True)
+            (data_dir / "config" / "sensitive_words" / "rules").mkdir(parents=True, exist_ok=True)
 
             git_message = ""
             if git_enabled:

@@ -180,6 +180,8 @@ async def create_workspace(request: CreateWorkspaceRequest):
     ws_data_dir.mkdir(parents=True, exist_ok=True)
     from core.layout_migration import write_layout_marker
     write_layout_marker(ws_data_dir)
+    (ws_data_dir / "config" / "approval_rules").mkdir(parents=True, exist_ok=True)
+    (ws_data_dir / "config" / "sensitive_words" / "rules").mkdir(parents=True, exist_ok=True)
 
     # Create sessions directory
     sessions_dir = sessions_dir_for_data_dir(ws_data_dir)

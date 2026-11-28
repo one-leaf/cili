@@ -127,6 +127,9 @@ def _migrate_tools(data_dir: Path) -> None:
     if loop.is_dir():
         shutil.rmtree(loop, ignore_errors=True)
     _move_dir(todo, data_dir / "runtime" / "todo")
+    tools = data_dir / "tools"
+    if tools.is_dir() and not any(tools.iterdir()):
+        tools.rmdir()
 
 
 def _migrate_memory(data_dir: Path) -> None:
