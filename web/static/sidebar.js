@@ -173,7 +173,10 @@ function buildSessionRow(session) {
         badge.textContent = channelLabel;
         preview.appendChild(badge);
     }
-    preview.appendChild(document.createTextNode(displayName));
+    const titleText = document.createElement('span');
+    titleText.className = 'session-title-text';
+    titleText.textContent = displayName;
+    preview.appendChild(titleText);
     div.appendChild(preview);
 
     if (!isMultiSelectMode) {
