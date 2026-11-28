@@ -31,61 +31,89 @@ logger = logging.getLogger(__name__)
 
 
 # .gitignore 内容
-_GITIGNORE_CONTENT = """# 临时文件和缓存
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
-ENV/
-.venv
-pip-log.txt
-pip-delete-this-directory.txt
+_GITIGNORE_CONTENT = """# cili：仅以下三项保留本机，其余 .cili 内容参与同步（会话/记忆/MCP/workflow/cron/tools/敏感词）
+.cili/tmp/
+.cili/cache/
+.cili/runtime/
 
-# IDE
-.vscode/
-.idea/
+# 系统 / 编辑器临时文件
+.DS_Store
+._*
+.Spotlight-V100/
+.Trashes/
+.fseventsd/
+[Tt]humbs.db
+[Ee]hthumbs.db
+[Dd]esktop.ini
+$RECYCLE.BIN/
 *.swp
 *.swo
 *~
+*.bak
+*.orig
+*.rej
+*.tmp
+*.temp
+.idea/
+.vscode/
+.vs/
+*.suo
+*.user
 
-# 系统文件
-.DS_Store
-Thumbs.db
+# Office / WPS 临时与锁文件（不影响正常的 .doc/.docx/.xls/.xlsx/.ppt/.pptx）
+~$*
+~WRL*.tmp
+~*.tmp
+.~lock.*#
+*.wbk
+*.xlk
+*.asd
 
-# 日志文件
+# 日志 / 环境变量（不忽略模板类 env 文件）
 *.log
+.env
+.env.local
+.env.*.local
 
-# 草履虫临时数据
-.cili/tmp/
-.cili/runtime/
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+.venv/
+venv/
+.tox/
+.nox/
+*.egg-info/
+.ipynb_checkpoints/
 
-# 敏感词规则：本地脱敏配置，不随工作区推送
-.cili/cache/
-
-# Node.js
+# Node / 前端
 node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-
-# Python
-.tox/
-.coverage
-htmlcov/
-.pytest_cache/
-.mypy_cache/
-
-# 构建产物
+.pnpm-debug.log*
+coverage/
+.next/
+.nuxt/
+.svelte-kit/
+.turbo/
+.parcel-cache/
 dist/
 build/
-*.egg-info/
 
-# 环境变量
-.env
-.env.local
+# JVM / Rust / .NET 构建产物
+*.class
+target/
+*.o
+*.obj
+*.pdb
 """
 
 
