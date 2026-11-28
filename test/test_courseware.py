@@ -13,6 +13,7 @@ SCRIPTS = ROOT / "core" / "skills" / "courseware" / "scripts"
 sys.path.insert(0, str(ROOT))
 
 from core.courseware_records import record_quiz_result  # noqa: E402
+from core.node_identity import get_node_id  # noqa: E402
 
 
 def _minimal_plan() -> dict:
@@ -105,14 +106,15 @@ def test_record_quiz_result_writes_jsonl_and_mistake_book(tmp_path: Path):
     receipt = record_quiz_result(tmp_path, payload)
     assert receipt["recorded"] is True
 
-    events = (tmp_path / ".cili" / "courseware" / "quiz-results.jsonl").read_text(encoding="utf-8")
+    node = get_node_id()
+    events = (tmp_path / "courseware" / "quiz-results" / f"{node}.jsonl").read_text(encoding="utf-8")
     assert "q1" in events
-    book = (tmp_path / "错题本.md").read_text(encoding="utf-8")
+    book = (tmp_path / f"错题本-{node}.md").read_text(encoding="utf-8")
     assert "cw-q:begin" in book
     assert "我的答案：B" in book
     assert "正确答案：A" in book
     assert "平均分成五份" in book
-    assert (tmp_path / "学习资料" / "成绩记录.html").is_file()
+    assert (tmp_path / "学习资料" / f"成绩记录-{node}.html").is_file()
 
 
 def test_parse_mistakes_reads_fields(tmp_path: Path):

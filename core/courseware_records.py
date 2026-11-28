@@ -58,25 +58,41 @@ def output_root(workspace_root: Path) -> Path:
     return workspace_root
 
 
-def scores_path(workspace_root: Path) -> Path:
-    return output_root(workspace_root) / "成绩记录.html"
+def _node_id(value: str | None = None) -> str:
+    """课件记录/派生文件按节点隔离；未初始化时回退 node-unknown。"""
+    raw = str(value or "").strip()
+    if not raw:
+        try:
+            from core.node_identity import get_node_id
+            raw = get_node_id()
+        except Exception:
+            raw = "node-unknown"
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", raw).strip("._") or "node-unknown"
 
 
-def mistakes_path(workspace_root: Path, courseware_path: Path | None) -> Path:
+def scores_path(workspace_root: Path, node_id: str | None = None) -> Path:
+    return output_root(workspace_root) / f"成绩记录-{_node_id(node_id)}.html"
+
+
+def mistakes_path(workspace_root: Path, courseware_path: Path | None,
+                  node_id: str | None = None) -> Path:
     workspace_root = workspace_root.resolve()
     if (workspace_root / "学习资料").is_dir() or (workspace_root / "错题本.md").is_file():
-        return workspace_root / "错题本.md"
-    if courseware_path is not None:
-        return courseware_path.resolve().parent / "错题本.md"
-    return workspace_root / "错题本.md"
+        base = workspace_root / "错题本.md"
+    elif courseware_path is not None:
+        base = courseware_path.resolve().parent / "错题本.md"
+    else:
+        base = workspace_root / "错题本.md"
+    return base.with_name(f"错题本-{_node_id(node_id)}.md")
 
 
-def _events_path(workspace_root: Path) -> Path:
-    return workspace_root.resolve() / ".cili" / "courseware" / "quiz-results.jsonl"
+def _events_path(workspace_root: Path, node_id: str | None = None) -> Path:
+    return workspace_root.resolve() / "courseware" / "quiz-results" / f"{_node_id(node_id)}.jsonl"
 
 
-def _append_event(workspace_root: Path, event: dict[str, Any]) -> None:
-    path = _events_path(workspace_root)
+def _append_event(workspace_root: Path, event: dict[str, Any],
+                  node_id: str | None = None) -> None:
+    path = _events_path(workspace_root, node_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps(event, ensure_ascii=False)
     with _LOCK:
@@ -149,20 +165,27 @@ def _update_mistake_book(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _read_events(workspace_root: Path) -> list[dict[str, Any]]:
-    path = _events_path(workspace_root)
-    if not path.is_file():
-        return []
+    """读取新目录下所有节点事件 + 旧路径事件（兼容/迁移期）。"""
+    root = workspace_root.resolve()
+    paths = sorted((root / "courseware" / "quiz-results").glob("*.jsonl"))
+    paths += [
+        root / "courseware" / "quiz-results.jsonl",
+        root / ".cili" / "courseware" / "quiz-results.jsonl",
+    ]
     events: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
+    for path in paths:
+        if not path.is_file():
             continue
-        try:
-            item = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(item, dict):
-            events.append(item)
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(item, dict):
+                events.append(item)
     return events
 
 
@@ -254,18 +277,19 @@ tr:last-child td{{border-bottom:none}}
 </div>
 <table><thead><tr><th>时间</th><th>课件</th><th>题数</th><th>正确</th><th>错题</th><th>正确率</th></tr></thead>
 <tbody>{''.join(row_html)}</tbody></table>
-<p class="note">错题详情见工作区的「错题本.md」。本页每次答题后自动刷新。</p>
+<p class="note">错题详情见工作区的「错题本-<节点>.md」。本页每次答题后自动刷新。</p>
 </div></body></html>"""
 
 
-def regenerate_scores(workspace_root: Path) -> Path:
-    path = scores_path(workspace_root)
+def regenerate_scores(workspace_root: Path, node_id: str | None = None) -> Path:
+    path = scores_path(workspace_root, node_id)
     html_text = _score_page_html(workspace_root, _read_events(workspace_root))
     atomic_write_text(path, html_text)
     return path
 
 
-def record_quiz_result(workspace_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+def record_quiz_result(workspace_root: Path, payload: dict[str, Any],
+                       node_id: str | None = None) -> dict[str, Any]:
     """Validate and persist one quiz event. Returns a small receipt."""
     if not isinstance(payload, dict):
         raise ValueError("payload must be an object")
@@ -291,12 +315,13 @@ def record_quiz_result(workspace_root: Path, payload: dict[str, Any]) -> dict[st
         "is_correct": is_correct,
         "ts": _clean(payload.get("ts"), 40) or datetime.now().isoformat(timespec="seconds"),
         "entry_id": _entry_id(payload),
+        "node_id": _node_id(node_id),
     }
-    _append_event(workspace_root, event)
+    _append_event(workspace_root, event, node_id)
     if not is_correct:
         courseware_path = Path(event["courseware_path"]) if event["courseware_path"] else None
-        _update_mistake_book(mistakes_path(workspace_root, courseware_path), event)
-    score_path = regenerate_scores(workspace_root)
+        _update_mistake_book(mistakes_path(workspace_root, courseware_path, node_id), event)
+    score_path = regenerate_scores(workspace_root, node_id)
     return {
         "recorded": True,
         "entry_id": event["entry_id"],
