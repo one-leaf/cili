@@ -365,8 +365,9 @@ class TurnExecutor:
         # 防止恶意 ID 造成路径穿越；消息体里的 tool_use_id 保持原样以匹配 API。
         output_filename = self._safe_output_filename(tool_use_id)
         output_file_path = ""
-        if self.runner.session_dir and output_filename and not _tool_flag(tool, "placeholder_output"):
-            output_file_path = str(self.runner.session_dir / output_filename)
+        output_dir = self._tool_output_dir() if self.runner.session_dir else None
+        if output_dir and output_filename and not _tool_flag(tool, "placeholder_output"):
+            output_file_path = str(output_dir / output_filename)
             # 仅流式工具（bash/python）需要实例属性实时写 + 前端轮询文件；
             # 并发安全工具（纯读）execute 不读 output_file，不设实例属性防互覆。
             if _tool_flag(tool, "streams_output"):
@@ -512,9 +513,9 @@ class TurnExecutor:
                 result_block = result.blocks[block_idx]
                 info = normalized_images.get(block_idx)
                 ref = None
-                if self.runner.session_dir:
+                if output_dir:
                     ref = write_tool_image_sidecar(
-                        self.runner.session_dir,
+                        output_dir,
                         Path(self.runner.cwd),
                         tool_use_id,
                         image_index,
@@ -563,7 +564,7 @@ class TurnExecutor:
                 and not _tool_flag(tool, "streams_output")
                 and not _tool_flag(tool, "placeholder_output")):
             # 显式路径调用 save_output_to_file，避免并行时实例属性互覆
-            save_path = str(self.runner.session_dir / output_filename) if self.runner.session_dir else None
+            save_path = str(output_dir / output_filename) if output_dir else None
             if save_path:
                 saved_path = tool.save_output_to_file(result, output_file=save_path)
                 # Update filename if changed to .json (multimodal)
@@ -613,8 +614,8 @@ class TurnExecutor:
         # (not truncated, not multimodal) the file becomes unnecessary.
         # _resolve_tool_results skips blocks with inline content, so it never
         # needs this file. Delete it now to avoid orphaned files on disk.
-        if not needs_external_file and self.runner.session_dir and output_filename:
-            orphan_path = self.runner.session_dir / output_filename
+        if not needs_external_file and output_dir and output_filename:
+            orphan_path = output_dir / output_filename
             try:
                 if orphan_path.exists():
                     orphan_path.unlink()
@@ -622,6 +623,18 @@ class TurnExecutor:
                 pass
 
         return result_dict
+
+    def _tool_output_dir(self):
+        """工具输出目录：优先 cache/tool_output/{session|exec}，旧工作区回退 session_dir。"""
+        session_dir = getattr(self.runner, "session_dir", None)
+        workspace_uuid = str(getattr(self.runner, "workspace_uuid", "") or "")
+        key = str(getattr(self.runner, "_session_id", "") or "")
+        if workspace_uuid and key:
+            from core.workspace_layout import tool_output_dir
+            path = tool_output_dir(workspace_uuid, key)
+            path.mkdir(parents=True, exist_ok=True)
+            return path
+        return session_dir
 
     def _resolve_tool_results(self, messages: list[dict]) -> list[dict]:
         """Read tool output from external files before sending to LLM.
