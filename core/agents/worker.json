@@ -131,7 +131,6 @@
     "read_tool_result",
     "session_search",
     "temp",
-    "loop",
     "mail",
     "pdf2markdown",
     "skill",
@@ -151,7 +150,6 @@
     "latex",
     "message_bus",
     "temp",
-    "loop",
     "pdf2markdown"
   ],
   "skills": [

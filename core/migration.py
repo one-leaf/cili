@@ -350,7 +350,7 @@ def migrate_sessions_dir(sessions_dir: Path, workspace_uuid: str | None = None) 
 def migrate_legacy_data_dir_tools_and_cron() -> None:
     """Migrate old tools/cron.d data from data/cili/ to workspace-local directories.
 
-    Once-off migration: moves {DATA_DIR}/tools/{todo,loop} and {DATA_DIR}/cron.d
+    Once-off migration: moves {DATA_DIR}/tools/todo and {DATA_DIR}/cron.d
     into the system workspace's local directories. Idempotent — skips if already done.
     """
     from core.config import DATA_DIR, get_system_workspace_data_dir
@@ -359,9 +359,9 @@ def migrate_legacy_data_dir_tools_and_cron() -> None:
     old_cron_dir = DATA_DIR / "cron.d"
     system_ws_dir = get_system_workspace_data_dir()
 
-    # Migrate tools (todo, loop)
+    # Migrate tools (todo)
     if old_tools_dir.exists():
-        for tool_name in ["todo", "loop"]:
+        for tool_name in ["todo"]:
             src = old_tools_dir / tool_name
             if not src.exists():
                 continue

@@ -151,7 +151,6 @@
     "read_tool_result",
     "session_search",
     "temp",
-    "loop",
     "mail",
     "pdf2markdown",
     "skill",
@@ -175,7 +174,6 @@
     "message_bus",
     "cron",
     "temp",
-    "loop",
     "pdf2markdown"
   ],
   "skills": [

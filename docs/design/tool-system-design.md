@@ -33,7 +33,7 @@ core/tools/
 
 `read` `write` `edit` `bash` `pwsh` `grep` `glob` `browser` `web_search`
 `deepseek_web_search` `deepseek_read_url` `memory` `python` `todo_write` `latex`
-`message_bus` `cron` `clock` `read_tool_result` `session_search` `temp` `loop`
+`message_bus` `cron` `clock` `read_tool_result` `session_search` `temp`
 `pdf2markdown` `office2pdf` `skill` `agent` `ask_user` `workflow` `tool_search`
 `send_user_file` `textbook_find` `textbook_outline` `textbook_read` `textbook_search`
 `textbook_original`
@@ -90,7 +90,7 @@ core/tools/
 | lite | autonomous | — | 7 个：read/write/edit/bash/python/message_bus/clock |
 | workflow（监督者） | interactive | — | 5 个：read/grep/glob/todo_write/clock；`workflow_agent` 动态注入 |
 
-`deferred_tools`（master/worker）：browser、todo_write、latex、message_bus、temp、loop、pdf2markdown
+`deferred_tools`（master/worker）：browser、todo_write、latex、message_bus、temp、pdf2markdown
 （worker 无 cron）。deferred 工具默认不出现在工具列表，由 `tool_search` 激活。
 
 ## 五、工具清单（按职责）
@@ -106,7 +106,7 @@ core/tools/
 | 联网（服务端） | deepseek_web_search、deepseek_read_url | 按模型门控（`core.llm.deepseek_capabilities`） |
 | 记忆 | memory | v3 记忆：store/search/skill/consolidate（`core.memory_*`） |
 | 协作 | agent、message_bus、ask_user | 子代理委派（后台/轮次）、跨会话消息、提问卡 |
-| 任务 | todo_write、loop、cron、clock | 任务表（整表替换）、周期循环、定时任务、时间 |
+| 任务 | todo_write、cron、clock | 任务表（整表替换）、定时任务、时间 |
 | 文档 | latex、office2pdf、pdf2markdown | LaTeX 编译、Office→PDF、MinerU OCR |
 | 教材 | textbook_find/outline/read/search/original | 基于教材数据包；公共基类 `TextbookToolBase` |
 | 交付 | send_user_file | 接口专属；校验后入 outbox，由接入端回合末交付 |

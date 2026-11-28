@@ -40,7 +40,7 @@ class TestDeferredToolSplit:
     def test_master_has_deferred_tools(self):
         """master 角色声明了 deferred_tools。"""
         role_cfg = load_role("master")
-        assert len(role_cfg.deferred_tools) == 8
+        assert len(role_cfg.deferred_tools) == 7
         assert "browser" in role_cfg.deferred_tools
         assert "latex" in role_cfg.deferred_tools
         assert "cron" in role_cfg.deferred_tools
@@ -314,7 +314,7 @@ class TestWorkerLiteDeferred:
     def test_worker_deferred_tools(self):
         """worker 的 deferred_tools 覆盖非交互工具，不含交互三件套。"""
         role_cfg = load_role("worker")
-        expected = {"browser", "todo_write", "latex", "message_bus", "temp", "loop", "pdf2markdown"}
+        expected = {"browser", "todo_write", "latex", "message_bus", "temp", "pdf2markdown"}
         assert set(role_cfg.deferred_tools) == expected
 
     def test_lite_no_deferred_tools(self):

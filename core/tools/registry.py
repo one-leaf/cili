@@ -24,7 +24,6 @@ from core.tools.edit import EditTool
 from core.tools.glob import GlobTool
 from core.tools.grep import GrepTool
 from core.tools.latex import LatexTool
-from core.tools.loop import LoopTool
 from core.tools.mail import MailTool, usable_accounts
 from core.tools.memory import MemoryTool
 from core.tools.message_bus import MessageBusTool
@@ -95,7 +94,7 @@ def _factory(cls: type, *, needs_config: bool = False, needs_permission: bool = 
 TOOL_CLASSES: tuple[type[Tool], ...] = (
     AgentTool, AskUserTool, BashTool, BrowserTool, ClockTool, CronTool,
     DeepSeekReadUrlTool, DeepSeekWebSearchTool, EditTool, GlobTool, GrepTool,
-    LatexTool, LoopTool, MailTool, MemoryTool, MessageBusTool, Office2PDFTool,
+    LatexTool, MailTool, MemoryTool, MessageBusTool, Office2PDFTool,
     PDF2MarkdownTool, PwshTool, PythonTool, ReadTool,
     ReadToolResultTool, SendNotificationTool, SendUserFileTool, SessionSearchTool,
     SkillTool, TempTool,
@@ -135,7 +134,6 @@ TOOL_REGISTRY: dict[str, Factory] = {
     "read_tool_result": _factory(ReadToolResultTool),
     "session_search": _factory(SessionSearchTool),
     "temp": _factory(TempTool),
-    "loop": _factory(LoopTool),
     # 收发邮件：无可用账号时在 create_tools 里整体裁掉（见下方门控）
     "mail": _factory(MailTool, needs_permission=True),
     "pdf2markdown": _factory(PDF2MarkdownTool, needs_config=True, needs_permission=True),

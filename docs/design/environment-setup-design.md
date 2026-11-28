@@ -103,7 +103,7 @@ main()
 | `data/cili/logs/` | 日志 |
 | `data/cili/backup/migrations/` | 迁移前配置备份 |
 | `data/cili/teen_mode.json` | 青少年模式状态 |
-| `data/cili/tools/` | 工具状态（loop、email 游标、chatgpt 凭证等） |
+| `data/cili/tools/` | 工具状态（email 游标、chatgpt 凭证等） |
 | `{workspace}/.cili/` | 工作区数据（sessions/memory/cron/workflows/approval_rules.json） |
 
 ## 八、测试与环境隔离
