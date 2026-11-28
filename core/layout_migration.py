@@ -74,7 +74,10 @@ def _backup(data_dir: Path) -> Path:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     key = re.sub(r"[^A-Za-z0-9_.-]+", "_", data_dir.as_posix())[-40:]
     dst = DATA_DIR / "backup" / f"layout-migration-{stamp}-{key}-{secrets.token_hex(3)}"
-    shutil.copytree(data_dir, dst, dirs_exist_ok=True)
+    # tmp/cache 是可丢弃数据；测试/浏览器可能留下权限受限的 junction，
+    # 复制它们会让备份失败，进而阻断启动。备份只保留共享内容与 runtime。
+    ignore = shutil.ignore_patterns("tmp", "cache")
+    shutil.copytree(data_dir, dst, dirs_exist_ok=True, ignore=ignore)
     return dst
 
 
