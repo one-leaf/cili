@@ -169,7 +169,7 @@ Use web_search for simple lookups; use browser when results are insufficient or 
             },
             "save_path": {
                 "type": "string",
-                "description": "File path to save the download to (default: suggested filename under workspace .cili/tmp/downloads/). "
+                "description": "File path to save the download to (default: suggested filename under workspace downloads/). "
                                "Relative paths resolve against the working directory.",
             },
             "path": {
@@ -405,7 +405,7 @@ Use web_search for simple lookups; use browser when results are insufficient or 
                     resolved=self._path_policy().resolve(save_path),
                 )
             else:
-                default_dir = os.path.join(self.cwd, ".cili", "tmp", "downloads")
+                default_dir = os.path.join(self.cwd, "downloads")
                 target = PathTarget(
                     OP_WRITE, default_dir, "browser.download(默认临时目录)",
                     resolved=self._path_policy().resolve(default_dir),

@@ -1685,7 +1685,7 @@ class BrowserService:
             ref: 触发下载的元素 ref（点击后等待下载）
             url: 直接导航到的下载 URL（与 ref 二选一）
             save_path: 保存路径（绝对路径，由工具层解析）；缺省用 suggested_filename
-            save_dir: 未给 save_path 时的保存目录（工具层默认工作区 .cili/tmp/downloads）
+            save_dir: 未给 save_path 时的保存目录（工具层默认工作区 downloads/）
             tab_index: 指定 tab 编号，None 表示使用活跃 tab
         """
         def _do_download(page):

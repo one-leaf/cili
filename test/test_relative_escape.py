@@ -123,7 +123,7 @@ class TestBrowserDownloadDefault:
         assert not result.error
         assert calls["save_path"] is None
         assert calls["save_dir"] == os.path.join(
-            test_workspace, ".cili", "tmp", "downloads")
+            test_workspace, "downloads")
         assert os.path.isdir(calls["save_dir"])
 
     def test_save_path_escape_rejected(self, test_workspace, monkeypatch):
