@@ -56,6 +56,33 @@ def test_migrate_data_dir_moves_runtime_and_config(tmp_path, monkeypatch):
     assert lm.migrate_data_dir(data) is False
 
 
+def test_migrate_data_dir_retries_after_partial_failure(tmp_path, monkeypatch):
+    """上次迁移在写 marker 前失败（.migrated 已存在、journal 又被重新写入）时能重跑。"""
+    data = tmp_path / "ws" / ".cili"
+    rec = {"cursor": 1, "session_key": "s1", "key": "k1"}
+    _write(data / "memory" / "journal.jsonl", json.dumps(rec) + "\n")
+    _write(data / "memory" / "journal.jsonl.migrated", "already\n")
+    # 上次失败前已并入 runtime 的同一条记录不应重复写入
+    _write(data / "runtime" / "memory" / "sessions" / "s1" / "journal.jsonl", json.dumps(rec) + "\n")
+    _write(data / "approval_rules.json", json.dumps({"rules": [], "constraints": []}))
+    _write(data / "approval_rules.json.migrated", "already")
+    _write(data / "sensitive_words.json", json.dumps({"enabled": False, "rules": []}))
+    _write(data / "sensitive_words.json.migrated", "already")
+
+    monkeypatch.setattr(lm, "_backup", lambda p: tmp_path / "backup")
+
+    assert lm.migrate_data_dir(data) is True
+
+    assert not (data / "memory" / "journal.jsonl").exists()
+    assert (data / "memory" / "journal.jsonl.migrated").is_file()
+    assert not (data / "approval_rules.json").exists()
+    assert not (data / "sensitive_words.json").exists()
+    runtime = data / "runtime" / "memory" / "sessions" / "s1" / "journal.jsonl"
+    lines = [line for line in runtime.read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert lines == [json.dumps(rec)]
+    assert (data / "runtime" / ".layout-migrated").is_file()
+
+
 def test_shared_layout_guard(tmp_path, monkeypatch):
     data = tmp_path / "ws" / ".cili"
     _write(data / "sessions" / "s1" / "meta.json", "{}")

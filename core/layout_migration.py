@@ -98,6 +98,23 @@ def _move_dir(src: Path, dst: Path) -> None:
         _move(src, dst)
 
 
+def _retire(old: Path, *, merge: bool = False) -> None:
+    """把旧文件退役为 ``*.migrated``。
+
+    上次迁移在写 marker 之前失败时，退役目标可能已存在；此时若再 rename 会
+    FileExistsError。journal 把本次剩余内容并回备份文件（不丢记录），其余
+    直接删除旧文件（内容已在本次或上次迁移中写入新位置）。
+    """
+    dst = old.with_name(old.name + ".migrated")
+    if not dst.exists():
+        old.rename(dst)
+        return
+    if merge:
+        with dst.open("a", encoding="utf-8") as f:
+            f.write(old.read_text(encoding="utf-8", errors="replace"))
+    old.unlink(missing_ok=True)
+
+
 def _migrate_workflows(data_dir: Path) -> None:
     root = data_dir / "workflows"
     if not root.is_dir():
@@ -158,10 +175,22 @@ def _migrate_memory(data_dir: Path) -> None:
         for key, records in groups.items():
             path = data_dir / "runtime" / "memory" / "sessions" / key / "journal.jsonl"
             path.parent.mkdir(parents=True, exist_ok=True)
+            # 上次迁移可能已把部分记录并入 runtime 后失败；重跑时按整行去重，
+            # 避免记忆管线把同一条记录消费两遍。
+            existing: set[str] = set()
+            if path.is_file():
+                existing = {
+                    line for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
+                    if line.strip()
+                }
             with path.open("a", encoding="utf-8") as f:
                 for rec in records:
-                    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        journal.rename(journal.with_suffix(".jsonl.migrated"))
+                    line = json.dumps(rec, ensure_ascii=False)
+                    if line in existing:
+                        continue
+                    existing.add(line)
+                    f.write(line + "\n")
+        _retire(journal, merge=True)
 
     extract = memory / ".extract"
     if extract.is_dir():
@@ -198,7 +227,7 @@ def _migrate_approval_rules(data_dir: Path) -> None:
         target / "_constraints.json",
         {"version": 1, "constraints": data.get("constraints") or []},
     )
-    old.rename(old.with_suffix(".json.migrated"))
+    _retire(old)
 
 
 def _migrate_sensitive_words(data_dir: Path) -> None:
@@ -222,7 +251,7 @@ def _migrate_sensitive_words(data_dir: Path) -> None:
             continue
         name = hashlib.sha1(str(rule["word"]).encode("utf-8")).hexdigest()[:16]
         atomic_write_json(rules_dir / f"{name}.json", rule)
-    old.rename(old.with_suffix(".json.migrated"))
+    _retire(old)
 
 
 def _migrate_courseware(data_dir: Path) -> None:
