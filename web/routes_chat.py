@@ -30,7 +30,8 @@ from core.image_pipeline import (
     project_images_for_request,
     save_image_payload,
 )
-from core.session import SessionStore, session_key, usage_total_for_session_dir
+from core.session import SessionStore, read_meta, session_key, usage_total_for_session_dir
+from core.session_owner import is_mine, owner_label
 from core.session_runner_runtime.conversation import ConversationStore
 from core.session_runner_runtime.executor import (
     FULL_COMPACT_TOKEN_RATIO,
@@ -557,6 +558,12 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         )
     runner = await _get_or_create_runner(workspace_uuid, session_id)
     key = session_key(workspace_uuid, session_id)
+    if is_mine(getattr(runner.session, "metadata", {}) or {}) is False:
+        owner = owner_label(getattr(runner.session, "metadata", {}) or {}) or "其他节点"
+        raise HTTPException(
+            status_code=403,
+            detail=f"这是 {owner} 的会话；请先创建副本再发送",
+        )
 
     # 本轮是「普通消息」还是「ask_user 的答案」——判定与注入逻辑在 core.turn_dispatch
     # （接口无关，Web 与 QQ 共用）。多模态入参在这里构造好一并传入。
@@ -851,6 +858,13 @@ async def revert_to_message(workspace_uuid: str, session_id: str, request: Rever
     """撤销到指定消息，删除该消息及其后面的所有消息。"""
     key = session_key(workspace_uuid, session_id)
     runner = registry.get(key)
+    session_dir = sessions_dir_for_data_dir(ws_dir) / session_id
+    meta = runner.session.metadata if runner is not None else read_meta(session_dir).get("metadata", {})
+    if is_mine(meta) is False:
+        raise HTTPException(
+            status_code=403,
+            detail=f"这是 {owner_label(meta) or '其他节点'} 的会话；请先创建副本再修改",
+        )
 
     # 如果 runner 存在且正在运行，拒绝操作
     if runner and runner.is_running():

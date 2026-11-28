@@ -43,6 +43,7 @@ from core.session import (
     session_display_name,
     session_key,
 )
+from core.session_owner import is_mine, owner_fields, owner_label
 from core.teen_mode import deny_message, get_teen_mode
 from core.time_utils import now_str
 from core.workspace_relocation import (
@@ -445,14 +446,22 @@ def _scan_session_brief(session_dir: Path) -> tuple[str, int]:
 
 
 @router.get("/api/workspaces/{workspace_uuid}/sessions")
-async def list_sessions(workspace_uuid: str, ws_dir: Path = Depends(require_workspace_data_dir)):
-    """List all sessions in a workspace (纯 meta 读，不读消息正文、不触发迁移)。"""
+async def list_sessions(
+    workspace_uuid: str,
+    scope: str = "all",
+    ws_dir: Path = Depends(require_workspace_data_dir),
+):
+    """List sessions in a workspace; scope=mine|all|others."""
     sessions_dir = sessions_dir_for_data_dir(ws_dir)
     if not sessions_dir.exists():
         return {"sessions": []}
 
     # 逐会话读 meta 属阻塞 IO（会话多时可达数百 ms），放线程里避免卡住事件循环
     session_list = await asyncio.to_thread(_collect_session_list, sessions_dir)
+    if scope == "mine":
+        session_list = [s for s in session_list if s.get("owner_mine") is True]
+    elif scope == "others":
+        session_list = [s for s in session_list if s.get("owner_mine") is not True]
 
     # 先排序再剥离内部字段：把 pop 写进 sort 的 key 里带副作用，难读
     session_list.sort(key=lambda s: s.get("_mtime", 0), reverse=True)
@@ -493,6 +502,7 @@ def _collect_session_list(sessions_dir: Path) -> list[dict]:
                     "hidden": metadata.get("hidden", False),
                     "channel": metadata.get(MARKER_CHANNEL, ""),
                     "channel_account": metadata.get(MARKER_ACCOUNT, ""),
+                    **owner_fields(metadata),
                     "_mtime": mtime,
                 })
             else:
@@ -516,6 +526,7 @@ def _collect_session_list(sessions_dir: Path) -> list[dict]:
                     "hidden": metadata.get("hidden", False),
                     "channel": metadata.get(MARKER_CHANNEL, ""),
                     "channel_account": metadata.get(MARKER_ACCOUNT, ""),
+                    **owner_fields(metadata),
                     "_mtime": index_file.stat().st_mtime,
                 })
         except Exception as e:
@@ -581,6 +592,7 @@ async def get_session(
             "messages": messages,
             "total_count": total_count,
             "has_more": has_more,
+            **owner_fields(meta.get("metadata", {})),
         }
     except Exception as e:
         logger.error(f"Failed to read session {session_id}: {e}")
@@ -827,6 +839,18 @@ async def create_session(workspace_uuid: str, request: CreateSessionRequest, ws_
     return session.to_dict()
 
 
+def _ensure_session_owned(session_dir: Path) -> None:
+    """服务端 owner 校验；未归属的旧会话放行，明确属于他人的拒绝。"""
+    meta = read_meta(session_dir)
+    state = is_mine(meta.get("metadata") or {})
+    if state is False:
+        label = owner_label(meta.get("metadata") or {})
+        raise HTTPException(
+            status_code=403,
+            detail=f"这是 {label or '其他节点'} 的会话；请先创建副本再修改",
+        )
+
+
 def _purge_session(workspace_uuid: str, session_id: str, sessions_dir: Path) -> None:
     """停止并摘除会话编排/队列/runner，再删目录（实现见 core.session_purge）。"""
     from core.session_purge import purge_session
@@ -842,6 +866,7 @@ async def delete_session(workspace_uuid: str, session_id: str, ws_dir: Path = De
     session_dir = sessions_dir_for_data_dir(ws_dir) / session_id
     if not session_dir.exists():
         raise HTTPException(status_code=404, detail="Session not found")
+    _ensure_session_owned(session_dir)
 
     # cleanup 会 save，必须在目录还在时摘除 runner。
     # 磁盘 cleanup/save 属阻塞操作，丢线程池执行。
@@ -856,6 +881,7 @@ async def rename_session(workspace_uuid: str, session_id: str, request: RenameSe
     session_dir = sessions_dir_for_data_dir(ws_dir) / session_id
     if not (session_dir / "index.json").exists():
         raise HTTPException(status_code=404, detail="Session not found")
+    _ensure_session_owned(session_dir)
 
     now = now_str()
     key = session_key(workspace_uuid, session_id)
@@ -892,6 +918,7 @@ async def set_session_hidden(workspace_uuid: str, session_id: str, request: SetH
     session_dir = sessions_dir_for_data_dir(ws_dir) / session_id
     if not (session_dir / "index.json").exists():
         raise HTTPException(status_code=404, detail="Session not found")
+    _ensure_session_owned(session_dir)
 
     now = now_str()
     key = session_key(workspace_uuid, session_id)
@@ -938,6 +965,17 @@ async def batch_session_operation(workspace_uuid: str, request: BatchSessionRequ
         if not index_file.exists():
             results.append({"session_id": session_id, "success": False, "error": "Not found"})
             continue
+        try:
+            meta = read_meta(session_dir)
+            if is_mine(meta.get("metadata") or {}) is False:
+                results.append({
+                    "session_id": session_id,
+                    "success": False,
+                    "error": f"属于 {owner_label(meta.get('metadata') or {}) or '其他节点'}",
+                })
+                continue
+        except Exception:
+            pass
 
         try:
             if request.action == "delete":

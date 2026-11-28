@@ -920,7 +920,10 @@ class SessionRunner(BaseSessionRunner):
             return {"status": "error", "message": "fork is only available for master sessions"}
         existing = [s.get("name", "") for s in SessionStore.list_sessions(self.sessions_dir)]
         name = default_branch_name(self.session.name, label, existing)
-        store = SessionStore.create_new_session(self.sessions_dir, name)
+        store = SessionStore.create_new_session(
+            self.sessions_dir, name,
+            metadata={"forked_from": self.current_session_id or self._session_id},
+        )
         store.image_history_mode = self._image_history_mode()
         # todo 按 session_id 存文件；fork 出新 session 时同步复制，分支后待办不丢
         try:
@@ -944,6 +947,40 @@ class SessionRunner(BaseSessionRunner):
                 dirs_exist_ok=True,
             )
         snapshot = self.get_valid_messages(strip_meta=False)
+        # 工具输出/图片附件已迁到 cache；fork 复制到自己的 cache，并重写 image_refs。
+        try:
+            from core.workspace_layout import tool_output_dir
+            src_key = str(getattr(self, "_session_id", "") or self.current_session_id or "")
+            src_cache = tool_output_dir(self.workspace_uuid, src_key)
+            dst_cache = tool_output_dir(self.workspace_uuid, store.session_id)
+            if src_cache.is_dir():
+                shutil.copytree(src_cache, dst_cache, dirs_exist_ok=True)
+                try:
+                    from pathlib import Path as _Path
+                    cwd = _Path(self.cwd).resolve()
+                    src_prefixes = {str(src_cache), src_cache.resolve().relative_to(cwd).as_posix()}
+                    dst_prefix = dst_cache.resolve().relative_to(cwd).as_posix()
+                except Exception:
+                    src_prefixes = {str(src_cache)}
+                    dst_prefix = str(dst_cache)
+                for msg in snapshot:
+                    content = msg.get("content")
+                    if not isinstance(content, list):
+                        continue
+                    for block in content:
+                        if not isinstance(block, dict):
+                            continue
+                        refs = (block.get("_meta") or {}).get("image_refs") or []
+                        for ref in refs:
+                            if isinstance(ref, dict) and ref.get("path"):
+                                value = str(ref["path"])
+                                for prefix in src_prefixes:
+                                    if prefix and value.startswith(prefix):
+                                        value = dst_prefix + value[len(prefix):]
+                                        break
+                                ref["path"] = value
+        except Exception as e:  # noqa: BLE001 —— 复制失败不阻断 fork
+            logger.warning(f"[fork] 复制 cache 输出失败: {e}")
         max_tokens = int(getattr(getattr(self.config, "system", None), "fork_max_tokens", 100000))
         try:
             token_estimate = self._count_messages_tokens(snapshot)

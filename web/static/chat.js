@@ -1144,6 +1144,35 @@ async function sendMessage() {
         return;
     }
 
+    // 他人会话：发送前明确提示并 fork 到自己的副本，不静默改写别人的会话。
+    if (currentSession.owner_mine === false) {
+        const owner = currentSession.owner_user_label
+            || currentSession.owner_node_name
+            || currentSession.owner_node_id
+            || '其他节点';
+        if (!confirm(`这是 ${owner} 的会话，将创建副本后继续。确定吗？`)) return;
+        try {
+            const resp = await fetch(
+                `/api/workspaces/${currentWorkspace.uuid}/sessions/${currentSession.session_id}/fork`,
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ next_steps: '', label: '他人会话副本' }),
+                }
+            );
+            const data = await resp.json().catch(() => ({}));
+            if (!resp.ok || !data.session_id) {
+                showToast(data.detail || '创建副本失败');
+                return;
+            }
+            await loadSession(data.session_id);
+            if (!currentSession) return;
+        } catch (e) {
+            showToast('创建副本失败: ' + (e.message || e));
+            return;
+        }
+    }
+
     console.log('Sending message to session:', currentSession.session_id);
     const sessionId = currentSession.session_id;
     // 发送（含排队）即收起推荐并作废在途请求（设计 §2.3）

@@ -1,11 +1,15 @@
 // ── 会话/工作流侧栏列表与批量操作 ──
 // 依赖 app.js: currentWorkspace, currentSession, showToast, setCurrentSession, chat 渲染等全局。
 
+let sessionOwnerScope = 'all';  // all | mine | others
+
 async function loadSessions() {
     if (!currentWorkspace) return;
 
     try {
-        const response = await fetch(`/api/workspaces/${currentWorkspace.uuid}/sessions`);
+        const response = await fetch(
+            `/api/workspaces/${currentWorkspace.uuid}/sessions?scope=${sessionOwnerScope}`
+        );
         const data = await response.json();
         sessions = data.sessions;
         renderSidebarList();
@@ -144,6 +148,15 @@ function buildSessionRow(session) {
     const displayName = session.display_name || session.name || session.preview || '未命名';
     const preview = document.createElement('div');
     preview.className = 'session-preview';
+    // 归属徽标：他人 / 未归属；自己的会话默认不占位
+    if (session.owner_mine === false || session.owner_mine === null) {
+        const ownerBadge = document.createElement('span');
+        ownerBadge.className = 'session-owner-badge';
+        ownerBadge.textContent = session.owner_mine === false
+            ? (session.owner_user_label || session.owner_node_name || '他人')
+            : '未归属';
+        preview.appendChild(ownerBadge);
+    }
     // 通道徽标：只标非 Web 来源（QQ/微信/终端/定时），网页会话不占位
     const channelLabel = SESSION_CHANNEL_LABELS[session.channel];
     if (channelLabel && session.channel !== 'web') {
@@ -522,9 +535,13 @@ function toggleSessionPanelMenu(e) {
 
     const viewLabel = showHiddenSessions ? '退出隐藏' : '显示隐藏项';
     const multiLabel = isMultiSelectMode ? '退出多选' : '多选';
+    const ownerLabel = sessionOwnerScope === 'all'
+        ? '只看我的'
+        : (sessionOwnerScope === 'mine' ? '只看他人' : '显示全部');
 
     dropdown.innerHTML = `
         <div class="session-dropdown-item" data-panel-action="import">导入</div>
+        <div class="session-dropdown-item" data-panel-action="toggle-owner">${ownerLabel}</div>
         <div class="session-dropdown-item" data-panel-action="toggle-view">${viewLabel}</div>
         <div class="session-dropdown-item" data-panel-action="toggle-multi">${multiLabel}</div>
     `;
@@ -536,6 +553,11 @@ function toggleSessionPanelMenu(e) {
             dropdown.remove();
             if (action === 'import') {
                 document.getElementById('session-import-input')?.click();
+            } else if (action === 'toggle-owner') {
+                sessionOwnerScope = sessionOwnerScope === 'all'
+                    ? 'mine'
+                    : (sessionOwnerScope === 'mine' ? 'others' : 'all');
+                loadSessions();
             } else if (action === 'toggle-view') {
                 showHiddenSessions = !showHiddenSessions;
                 renderSidebarList();

@@ -1474,8 +1474,11 @@ class SessionStore:
         session_id = generate_short_id()
         session = SessionStore(session_id, sessions_dir)
         session.name = name
+        from core.session_owner import owner_metadata
+        merged = owner_metadata(metadata)
         if metadata:
-            session.metadata.update(metadata)
+            merged.update(metadata)
+        session.metadata.update(merged)
         # force：新会话无脏标记也需写出初始三件套文件
         session.save(force=True)
         return session
