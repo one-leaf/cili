@@ -87,7 +87,6 @@ class ReadToolResultTool(Tool):
 
         session_dir = self.session.session_dir
 
-        # Try main session directory first
         filename = f"{tool_use_id}.txt"
         file_path = session_dir / filename
 
@@ -99,7 +98,17 @@ class ReadToolResultTool(Tool):
                     file_path = candidate
                     break
             else:
-                return ToolResult(f"Tool result file not found: {filename}", error=True)
+                # M3 兼容：新路径在 cache/tool_output/{session|exec}/。
+                from core.tool_output import find_tool_output_file
+                found = find_tool_output_file(
+                    session_dir,
+                    filename,
+                    workspace_uuid=getattr(self, "workspace_uuid", ""),
+                    key=str(getattr(self.session, "session_id", "") or ""),
+                )
+                if found is None:
+                    return ToolResult(f"Tool result file not found: {filename}", error=True)
+                file_path = found
 
         try:
             content = file_path.read_text(encoding="utf-8", errors="replace")

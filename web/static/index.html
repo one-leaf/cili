@@ -499,6 +499,31 @@
                         </div>
 
                         <div class="settings-card">
+                            <div class="settings-card-head"><span class="title">节点身份</span></div>
+                            <div class="setting-row">
+                                <label for="system-node-id">节点 ID</label>
+                                <div class="control">
+                                    <input type="text" id="system-node-id" readonly>
+                                    <div class="hint">用于 cron 归属、课件记录分文件和运行上下文；不是密钥</div>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label for="system-node-name">节点名称</label>
+                                <div class="control">
+                                    <input type="text" id="system-node-name" maxlength="120" placeholder="默认使用主机名">
+                                    <div class="hint">显示在系统提示和设置页；改名不会改变节点 ID</div>
+                                </div>
+                            </div>
+                            <div class="setting-row">
+                                <label></label>
+                                <div class="control">
+                                    <button type="button" class="btn btn-secondary" onclick="saveNodeName()">保存名称</button>
+                                    <button type="button" class="btn btn-secondary" onclick="regenerateNodeIdentity()">重新生成 ID</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="settings-card">
                             <div class="settings-card-head"><span class="title">文档与网络</span></div>
                             <div class="setting-row">
                                 <label for="system-mineru-api-key">MinerU API Key</label>

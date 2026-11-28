@@ -10,6 +10,41 @@ import os
 from typing import Any
 
 
+def find_tool_output_file(
+    session_dir,
+    output_path: str,
+    *,
+    workspace_uuid: str = "",
+    key: str = "",
+):
+    """按会话目录 → cache/tool_output 的顺序找输出文件。
+
+    M3 兼容层：旧文件仍在 session_dir；新文件（M7 起）在 cache。
+    ``output_path`` 只取文件名，避免会话文件里的路径穿越。
+    """
+    from pathlib import Path
+
+    name = Path(str(output_path or "")).name
+    if not name:
+        return None
+    session_dir = Path(session_dir)
+    candidate = (session_dir / name).resolve()
+    if candidate.is_relative_to(session_dir.resolve()) and candidate.is_file():
+        return candidate
+    if not workspace_uuid or not key:
+        return None
+    try:
+        from core.workspace_layout import tool_output_dir
+
+        root = tool_output_dir(workspace_uuid, key).resolve()
+        candidate = (root / name).resolve()
+        if candidate.is_relative_to(root) and candidate.is_file():
+            return candidate
+    except (OSError, ValueError):
+        return None
+    return None
+
+
 def save_tool_output(result: Any, output_file: str | None) -> str | None:
     """统一保存工具输出到外部文件，返回实际保存路径（未保存返回 None）。
 
@@ -68,12 +103,15 @@ def save_tool_output(result: Any, output_file: str | None) -> str | None:
         return None  # 写入失败不影响工具执行
 
 
-def resolve_tool_results_for_context(messages: list[dict], session_dir) -> None:
+def resolve_tool_results_for_context(
+    messages: list[dict], session_dir, *, workspace_uuid: str = "", key: str = ""
+) -> None:
     """为上下文估算解析外置工具结果（不改 UI 渲染路径）。
 
     与 runner 的 ``_resolve_tool_results`` 同口径：
     - ``.json`` 多模态文件解析成 blocks（图片随后由图片投影替换为引用）
     - ``.txt`` 截断结果按 8K 中间截断，完整结果按通用 50K 字符上限
+    - M3 兼容：session_dir 找不到时回退 cache/tool_output
     """
     from pathlib import Path
 
@@ -82,7 +120,6 @@ def resolve_tool_results_for_context(messages: list[dict], session_dir) -> None:
     from core.tool_limits import TOOL_RESULT_MAX_CHARS
 
     session_dir = Path(session_dir)
-    session_root = session_dir.resolve()
     for msg in messages:
         content = msg.get("content")
         if not isinstance(content, list):
@@ -94,8 +131,10 @@ def resolve_tool_results_for_context(messages: list[dict], session_dir) -> None:
             output_path = str(meta.get("output_path") or "")
             if not output_path or block.get("content"):
                 continue
-            file_path = (session_dir / output_path).resolve()
-            if not file_path.is_relative_to(session_root) or not file_path.exists():
+            file_path = find_tool_output_file(
+                session_dir, output_path, workspace_uuid=workspace_uuid, key=key
+            )
+            if file_path is None:
                 continue
             try:
                 if file_path.suffix.lower() == ".json":
@@ -122,17 +161,26 @@ def resolve_tool_results_for_context(messages: list[dict], session_dir) -> None:
 
 
 def read_tool_output_chunk(session_dir, tool_use_id: str, offset: int,
-                           max_chunk: int = 256 * 1024) -> dict:
+                           max_chunk: int = 256 * 1024, *,
+                           workspace_uuid: str = "", key: str = "") -> dict:
     """读取工具输出文件的新增内容（前端轮询实时显示）。
 
     文件命名 ``{tool_use_id}.txt`` / ``{tool_use_id}_{tool_name}.txt``，
-    兼容 exec_* 子目录。返回 ``{content, offset, exists}``。
+    兼容 exec_* 子目录和 cache/tool_output。返回 ``{content, offset, exists}``。
     """
     matches = list(session_dir.glob(f"{tool_use_id}.txt")) + list(session_dir.glob(f"{tool_use_id}_*.txt"))
     for exec_dir in session_dir.glob("exec_*"):
         if exec_dir.is_dir():
             matches.extend(exec_dir.glob(f"{tool_use_id}.txt"))
             matches.extend(exec_dir.glob(f"{tool_use_id}_*.txt"))
+    if not matches and workspace_uuid and key:
+        try:
+            from core.workspace_layout import tool_output_dir
+            cache_dir = tool_output_dir(workspace_uuid, key)
+            matches = list(cache_dir.glob(f"{tool_use_id}.txt"))
+            matches += list(cache_dir.glob(f"{tool_use_id}_*.txt"))
+        except OSError:
+            matches = []
 
     if not matches:
         return {"content": "", "offset": 0, "exists": False}

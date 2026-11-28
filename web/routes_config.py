@@ -78,6 +78,29 @@ class McpTestRequest(BaseModel):
     workspace: str = ""
 
 
+class NodeNameRequest(BaseModel):
+    name: str = ""
+
+
+@router.get("/api/system/node")
+async def get_system_node():
+    """当前节点身份（非凭证，可展示给用户/模型）。"""
+    from core.node_identity import get_node_identity
+    return get_node_identity()
+
+
+@router.put("/api/system/node", dependencies=[Depends(csrf_protect)])
+async def update_system_node(request: NodeNameRequest):
+    from core.node_identity import update_node_name
+    return update_node_name(request.name)
+
+
+@router.post("/api/system/node/regenerate", dependencies=[Depends(csrf_protect)])
+async def regenerate_system_node():
+    from core.node_identity import regenerate_node_identity
+    return regenerate_node_identity()
+
+
 class McpServersUpdateRequest(BaseModel):
     """工作区 MCP 配置全量保存（每台服务器一个文件）。"""
     workspace: str

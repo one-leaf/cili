@@ -132,11 +132,18 @@ def build_environment_context(workspace_uuid: str = "", cwd: str = "", *,
     # 工作区临时目录：写在 {workspace}/.cili/tmp 内，受统一路径权限（写/删限工作区）约束
     tmp_dir = str(get_workspace_data_dir(workspace_uuid) / "tmp")
 
+    try:
+        from core.node_identity import get_node_identity
+        node = get_node_identity()
+        node_line = f"Node: `{node['id']}` ({node['name']})"
+    except Exception:
+        node_line = "Node: unavailable"
     parts = [
         "## Workspace",
         "",
         f"Workspace ID: `{workspace_uuid}`",
         f"Workspace directory (CWD): `{cwd}`",
+        node_line,
         "",
         "**This directory is the CWD for all tool executions** (python, bash, etc.). All relative paths resolve against this directory.",
         "",

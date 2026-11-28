@@ -18,6 +18,50 @@ const MS_ICONS = {
     eyeOff: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><path d="M1 1l22 22"/></svg>',
 };
 
+async function loadNodeIdentity() {
+    try {
+        const response = await fetch('/api/system/node');
+        if (!response.ok) return;
+        const data = await response.json();
+        const idEl = document.getElementById('system-node-id');
+        const nameEl = document.getElementById('system-node-name');
+        if (idEl) idEl.value = data.id || '';
+        if (nameEl) nameEl.value = data.name || '';
+    } catch (e) {
+        console.warn('加载节点身份失败', e);
+    }
+}
+
+async function saveNodeName() {
+    const nameEl = document.getElementById('system-node-name');
+    if (!nameEl) return;
+    try {
+        const response = await fetch('/api/system/node', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: nameEl.value })
+        });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        nameEl.value = data.name || '';
+        showToast('节点名称已保存');
+    } catch (e) {
+        showToast(`保存失败：${e.message || e}`);
+    }
+}
+
+async function regenerateNodeIdentity() {
+    if (!confirm('重新生成节点 ID 会影响 cron 归属和后续课件记录分文件。确定继续吗？')) return;
+    try {
+        const response = await fetch('/api/system/node/regenerate', { method: 'POST' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        await loadNodeIdentity();
+        showToast('节点 ID 已重新生成');
+    } catch (e) {
+        showToast(`重新生成失败：${e.message || e}`);
+    }
+}
+
 // 加载某个角色（worker/lite）模型配置到表单
 // 收集某个角色（worker/lite）模型配置；name 留空 → 信号后端移除、回退继承 Master
 async function openSettings() {
@@ -38,6 +82,7 @@ async function openSettings() {
         const response = await fetch('/api/config');
         const data = await response.json();
         const cfg = data.config || {};
+        loadNodeIdentity();
 
         // ── Providers（模型列表 tab） ──
         settingsServerPresets = Array.isArray(data.server_presets) ? data.server_presets : [];

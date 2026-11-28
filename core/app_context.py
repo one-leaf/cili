@@ -28,6 +28,13 @@ class AppContext:
             return
         self._started = True
 
+        # 节点身份必须最先就绪：cron owner、课件记录、prompt 和后续布局迁移都依赖它。
+        try:
+            from core.node_identity import ensure_node_identity
+            ensure_node_identity()
+        except Exception as e:
+            logger.warning(f"[AppContext] 初始化节点身份失败: {e}")
+
         # 浏览器服务实例（Playwright 延迟到首次操作时启动）
         try:
             from core.browser_service import get_service

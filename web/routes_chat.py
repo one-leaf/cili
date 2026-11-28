@@ -409,11 +409,21 @@ def _start_pump(key: str) -> None:
 _MAX_STREAM_CHUNK = 256 * 1024
 
 
-def _read_tool_output_chunk(session_dir: Path, tool_use_id: str, offset: int) -> dict:
+def _read_tool_output_chunk(
+    session_dir: Path,
+    tool_use_id: str,
+    offset: int,
+    *,
+    workspace_uuid: str = "",
+    key: str = "",
+) -> dict:
     """读取工具输出增量（实现见 core.tool_output）。"""
     from core.tool_output import read_tool_output_chunk
 
-    return read_tool_output_chunk(session_dir, tool_use_id, offset, _MAX_STREAM_CHUNK)
+    return read_tool_output_chunk(
+        session_dir, tool_use_id, offset, _MAX_STREAM_CHUNK,
+        workspace_uuid=workspace_uuid, key=key,
+    )
 
 
 @router.get("/api/workspaces/{workspace_uuid}/sessions/{session_id}/stream/{tool_use_id}")
@@ -447,7 +457,12 @@ async def stream_tool_output(
 
     try:
         return await asyncio.to_thread(
-            _read_tool_output_chunk, session_dir, tool_use_id, offset
+            _read_tool_output_chunk,
+            session_dir,
+            tool_use_id,
+            offset,
+            workspace_uuid=workspace_uuid,
+            key=session_id,
         )
     except Exception as e:
         logger.warning(f"Failed to read stream file for {tool_use_id}: {e}")
@@ -1051,7 +1066,11 @@ async def get_session_context(
             if ConversationStore.is_message_in_context(m)
         ]
         await asyncio.to_thread(
-            resolve_tool_results_for_context, messages, sm.session_dir
+            resolve_tool_results_for_context,
+            messages,
+            sm.session_dir,
+            workspace_uuid=workspace_uuid,
+            key=session_id,
         )
         history_mode = getattr(
             getattr(config, "images", None), "history_mode", "current_turn"

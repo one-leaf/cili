@@ -2,6 +2,7 @@
 
 import json
 
+import core.workspace_layout as layout
 from core.tool_output import resolve_tool_results_for_context
 
 
@@ -60,3 +61,17 @@ def test_rejects_path_outside_session(tmp_path):
 
     # 路径穿越时不注入内容，保持原样
     assert messages[0]["content"][0]["content"] is None
+
+
+def test_cache_fallback(tmp_path, monkeypatch):
+    cache_dir = tmp_path / "cache-tool-output"
+    cache_dir.mkdir()
+    (cache_dir / "t1.txt").write_text("from cache", encoding="utf-8")
+    monkeypatch.setattr(layout, "tool_output_dir", lambda *_: cache_dir)
+    messages = [_msg("t1.txt")]
+
+    resolve_tool_results_for_context(
+        messages, tmp_path / "session", workspace_uuid="ws", key="s1"
+    )
+
+    assert messages[0]["content"][0]["content"] == "from cache"

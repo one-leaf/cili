@@ -98,6 +98,14 @@ def create_job(
     data["workspace_uuid"] = workspace_uuid
     data["scope"] = "workspace"
     data["managed"] = False
+    if not data.get("owner_node_id"):
+        from core.node_identity import get_node_identity
+        identity = get_node_identity()
+        data["owner_node_id"] = identity["id"]
+        data["owner_name"] = identity["name"]
+    elif not data.get("owner_name"):
+        from core.node_identity import get_node_name
+        data["owner_name"] = get_node_name()
     if origin and not data.get("delivery"):
         data["delivery"] = {
             "mode": "origin",

@@ -660,16 +660,32 @@ class TurnExecutor:
                     block["content"] = "[工具输出文件路径缺失]"
                     continue
 
+                session_root = self.runner.session_dir.resolve()
                 file_path = (self.runner.session_dir / output_path).resolve()
                 # 防御纵深：output_path 来自会话文件 _meta，篡改可能穿越 session 目录 → 拒绝。
                 # 正常路径创建时已被 _safe_output_filename 消毒，此处与 routes_workspace 的
                 # W10 校验对齐，双保险。
-                if not file_path.is_relative_to(self.runner.session_dir.resolve()):
+                if not file_path.is_relative_to(session_root):
                     block["content"] = "[工具输出路径校验失败]"
                     continue
                 if not file_path.exists():
-                    block["content"] = "[工具正在执行中...]"
-                    continue
+                    # M3 兼容：新路径在 cache/tool_output/{session|exec}/。
+                    from core.tool_output import find_tool_output_file
+                    key = str(
+                        getattr(self.runner, "_session_id", "")
+                        or getattr(self.runner, "current_session_id", "")
+                        or ""
+                    )
+                    found = find_tool_output_file(
+                        self.runner.session_dir,
+                        output_path,
+                        workspace_uuid=str(getattr(self.runner, "workspace_uuid", "") or ""),
+                        key=key,
+                    )
+                    if found is None:
+                        block["content"] = "[工具正在执行中...]"
+                        continue
+                    file_path = found
 
                 try:
                     # 检查是否是 json 文件（多模态内容）

@@ -17,6 +17,7 @@ from core.config import (
 from core.cron import delivery, executor, schedule, store
 from core.cron.model import Job, JobState, RunResult, now_str
 from core.inbox import MAX_SYSTEM_BODY_CHARS, get_inbox_store
+from core.node_identity import get_node_identity
 
 logger = logging.getLogger(__name__)
 
@@ -88,10 +89,28 @@ class CronEngine:
 
     def _load_all(self, *, recover_running: bool = False) -> None:
         interrupted: list[tuple[Job, JobState, str, str]] = []
+        try:
+            node = get_node_identity()
+        except Exception:
+            node = {"id": "", "name": ""}
         with self._lock:
             loaded: dict[tuple[str, str], LoadedJob] = {}
             for workspace_uuid in get_all_workspace_uuids():
                 for job in store.list_jobs(workspace_uuid):
+                    if job.owner_node_id and job.owner_node_id != node["id"]:
+                        logger.debug(
+                            "[cron] skip %s/%s: owner=%s current=%s",
+                            workspace_uuid, job.id, job.owner_node_id, node["id"],
+                        )
+                        continue
+                    if not job.owner_node_id and node["id"]:
+                        # 旧任务没有 owner：由当前节点接管并持久化，避免多机重复执行。
+                        job.owner_node_id = node["id"]
+                        job.owner_name = node["name"]
+                        try:
+                            store.save_job(job)
+                        except Exception:
+                            logger.warning("[cron] 写入 owner 失败: %s/%s", workspace_uuid, job.id)
                     try:
                         state = store.load_state(workspace_uuid, job.id)
                         changed = self._recover_and_init(
@@ -496,11 +515,24 @@ class CronEngine:
     # ─── public API ─────────────────────────────────────────────
 
     def run_now(self, workspace_uuid: str, job_id: str) -> bool:
-        """手动触发：extra fire，不消耗 remaining、不影响 next_run。"""
+        """手动触发：extra fire，不消耗 remaining、不影响 next_run。
+
+        非 owner 的任务不会进入定时调度表（避免多机重复执行），但用户显式
+        手动运行时允许任意节点执行，因此这里按需从 store 加载。
+        """
         key = (workspace_uuid, job_id)
         with self._lock:
             loaded = self._jobs.get(key)
-            if loaded is None or loaded.state.running:
+            if loaded is None:
+                job = store.load_job(workspace_uuid, job_id)
+                if job is None:
+                    return False
+                loaded = LoadedJob(
+                    job=job,
+                    state=store.load_state(workspace_uuid, job_id),
+                    next_ts=None,
+                )
+            if loaded.state.running:
                 return False
             state = loaded.state
             state.running = {

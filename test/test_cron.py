@@ -273,6 +273,8 @@ class TestService:
         assert job.id == "new-task"
         assert job.delivery["mode"] == "origin"
         assert job.origin["session_id"] == "sess-1"
+        from core.node_identity import get_node_id
+        assert job.owner_node_id == get_node_id()
         assert store.job_path(ws, job.id).exists()
         state = store.load_state(ws, job.id)
         assert state.next_run and state.remaining == 9999
@@ -544,6 +546,7 @@ class TestEngine:
         assert state.remaining == 9999
         assert any(item.get("extra") for item in state.history)
         engine.stop()
+
 
 
 # ─── tool guards ────────────────────────────────────────────────

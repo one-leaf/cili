@@ -43,6 +43,8 @@ class Job:
     enabled: bool = True
     scope: str = "workspace"
     workspace_uuid: str = ""
+    owner_node_id: str = ""
+    owner_name: str = ""
     schedule: dict[str, Any] = field(default_factory=dict)
     misfire: dict[str, Any] = field(
         default_factory=lambda: {"policy": "once", "grace_minutes": 120}
@@ -89,6 +91,8 @@ class Job:
             enabled=bool(data.get("enabled", True)),
             scope=str(data.get("scope") or "workspace"),
             workspace_uuid=str(data.get("workspace_uuid") or workspace_uuid or ""),
+            owner_node_id=str(data.get("owner_node_id") or ""),
+            owner_name=str(data.get("owner_name") or ""),
             schedule=merged_schedule,
             misfire=misfire,
             content=copy.deepcopy(data.get("content")),
@@ -175,6 +179,8 @@ class Job:
             "enabled": self.enabled,
             "scope": self.scope,
             "workspace_uuid": self.workspace_uuid,
+            "owner_node_id": self.owner_node_id,
+            "owner_name": self.owner_name,
             "schedule": copy.deepcopy(self.schedule),
             "misfire": copy.deepcopy(self.misfire),
             "content": copy.deepcopy(self.content),
@@ -202,6 +208,7 @@ class Job:
             "enabled": self.enabled,
             "execution": copy.deepcopy(self.execution),
         }
+        # owner 是运行归属，不是种子内容；升级 seed 时不能覆盖或参与 checksum。
 
 
 @dataclass
