@@ -261,7 +261,8 @@ class MemoryStore:
         self.memory_dir = Path(memory_dir).resolve()
         self.entries_dir = self.memory_dir / "entries"
         self.archive_dir = self.memory_dir / "archive"
-        self.index_path = self.memory_dir / "MEMORY.md"
+        from core.memory_paths import resolve_existing
+        self.index_path = resolve_existing(self.memory_dir, "MEMORY.md")
         self._lock = _dir_lock(str(self.memory_dir))
 
     # ── 内部定位 / 读写 ──

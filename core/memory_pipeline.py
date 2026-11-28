@@ -244,12 +244,8 @@ def _advance_pointer(pointer: "_ExtractPointer", last_id: str) -> None:
 
 
 def _read_index_text(memory_dir: str) -> str:
-    index_path = os.path.join(memory_dir, "MEMORY.md")
-    try:
-        with open(index_path, "r", encoding="utf-8") as f:
-            return f.read().strip()
-    except OSError:
-        return ""
+    from core.memory_paths import read_text
+    return read_text(memory_dir, "MEMORY.md").strip()
 
 
 # ─── 提取（§4.2）───────────────────────────────────────────────────
@@ -600,7 +596,6 @@ _SUMMARY_MAX_BYTES = 2 * 1024
 
 def _write_summary(memory_dir: str, summary: str) -> None:
     """写全局摘要 summary.md（≤2KB，超限按整行截断）。"""
-    os.makedirs(memory_dir, exist_ok=True)
     text = summary.strip()
     if len(text.encode("utf-8")) > _SUMMARY_MAX_BYTES:
         kept: list[str] = []
@@ -612,7 +607,10 @@ def _write_summary(memory_dir: str, summary: str) -> None:
             kept.append(line)
             size += line_size
         text = "\n".join(kept)
-    atomic_write_text(os.path.join(memory_dir, "summary.md"), text)
+    from core.memory_paths import resolve_existing
+    path = resolve_existing(memory_dir, "summary.md")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(path, text)
 
 
 def _consolidate_pending(

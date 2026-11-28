@@ -258,44 +258,40 @@ def _build_memory_sections(memory_dir: str, workspace_uuid: str = "") -> list[st
                 lines.append(f"- {p.get('title', p['name'])}: {p.get('description', '')}{stale_note}")
             lines.append("")
 
-        index_path = os.path.join(memory_dir, "MEMORY.md")
-        if os.path.isfile(index_path):
-            with open(index_path, encoding="utf-8") as f:
-                index_text = f.read().strip()
-            if index_text:
-                lines.append("### Memory Index (descriptions of all entries)")
-                try:
-                    by_type = store.stat().get("by_type", {})
-                    counts = " / ".join(
-                        f"{t} {by_type.get(t, 0)}"
-                        for t in ("fact", "preference", "skill", "reference")
-                    )
-                    lines.append(f"Entries: {counts}")
-                except Exception:
-                    pass
-                truncated = len(index_text) > _MEMORY_INDEX_MAX_CHARS
-                if truncated:
-                    cut = index_text[:_MEMORY_INDEX_MAX_CHARS]
-                    newline = cut.rfind("\n")
-                    if newline > 0:
-                        cut = cut[:newline]
-                    index_text = cut.rstrip()
-                lines.append(index_text)
-                if truncated:
-                    lines.append(
-                        f"(Index truncated at {_MEMORY_INDEX_MAX_CHARS} chars — "
-                        'use memory(action="find", query="...") for older entries.)'
-                    )
-                lines.append("")
+        from core.memory_paths import read_text as read_memory_text
 
-        summary_path = os.path.join(memory_dir, "summary.md")
-        if os.path.isfile(summary_path):
-            with open(summary_path, encoding="utf-8") as f:
-                summary_text = f.read().strip()[:_MEMORY_SUMMARY_MAX_CHARS]
-            if summary_text:
-                lines.append("### Memory Summary")
-                lines.append(summary_text)
-                lines.append("")
+        index_text = read_memory_text(memory_dir, "MEMORY.md").strip()
+        if index_text:
+            lines.append("### Memory Index (descriptions of all entries)")
+            try:
+                by_type = store.stat().get("by_type", {})
+                counts = " / ".join(
+                    f"{t} {by_type.get(t, 0)}"
+                    for t in ("fact", "preference", "skill", "reference")
+                )
+                lines.append(f"Entries: {counts}")
+            except Exception:
+                pass
+            truncated = len(index_text) > _MEMORY_INDEX_MAX_CHARS
+            if truncated:
+                cut = index_text[:_MEMORY_INDEX_MAX_CHARS]
+                newline = cut.rfind("\n")
+                if newline > 0:
+                    cut = cut[:newline]
+                index_text = cut.rstrip()
+            lines.append(index_text)
+            if truncated:
+                lines.append(
+                    f"(Index truncated at {_MEMORY_INDEX_MAX_CHARS} chars — "
+                    'use memory(action="find", query="...") for older entries.)'
+                )
+            lines.append("")
+
+        summary_text = read_memory_text(memory_dir, "summary.md").strip()[:_MEMORY_SUMMARY_MAX_CHARS]
+        if summary_text:
+            lines.append("### Memory Summary")
+            lines.append(summary_text)
+            lines.append("")
 
         lines.extend([
             "Search/recall: `memory(action=\"find\", query=\"keyword\")` lists matching entries "
