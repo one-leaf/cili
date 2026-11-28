@@ -68,7 +68,6 @@ from web.deps import (
     validate_session_id,
     validate_workspace_uuid,
 )
-from web.goal_runner import stop_goal_runner
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -828,9 +827,7 @@ def _purge_session(workspace_uuid: str, session_id: str, sessions_dir: Path) -> 
     """停止并摘除会话编排/队列/runner，再删目录（实现见 core.session_purge）。"""
     from core.session_purge import purge_session
 
-    purge_session(
-        workspace_uuid, session_id, sessions_dir, stop_goal=stop_goal_runner,
-    )
+    purge_session(workspace_uuid, session_id, sessions_dir)
 
 
 @router.delete("/api/workspaces/{workspace_uuid}/sessions/{session_id}",
@@ -842,7 +839,7 @@ async def delete_session(workspace_uuid: str, session_id: str, ws_dir: Path = De
     if not session_dir.exists():
         raise HTTPException(status_code=404, detail="Session not found")
 
-    # cleanup 会 save，必须在目录还在时摘除 runner；GoalRunner 也先停掉。
+    # cleanup 会 save，必须在目录还在时摘除 runner。
     # 磁盘 cleanup/save 属阻塞操作，丢线程池执行。
     await asyncio.to_thread(_purge_session, workspace_uuid, session_id, sessions_dir_for_data_dir(ws_dir))
     return {"success": True}

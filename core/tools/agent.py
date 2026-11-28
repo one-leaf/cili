@@ -291,7 +291,6 @@ class AgentTool(AgentBackgroundMixin, Tool):
         # Generate exec_id upfront so we can notify the UI immediately
         # SessionIdentity（worker/lite 的 session 引用）无 agent_logs，
         # 深度限制放开委派时避免 AttributeError，回退生成随机 exec_id（T28）
-        # GoalRunner 会预生成 exec_id 传入，以便占位消息引用同一 id
         if not exec_id:
             exec_id = ""
             if self.session:

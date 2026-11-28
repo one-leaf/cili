@@ -23,7 +23,6 @@ from core.config import (
 )
 from core.editor_context import expand_file_mentions, format_attachment
 from core.event_bus import get_event_bus
-from core.goal import get_goal_manager
 from core.image_pipeline import (
     DEFAULT_MAX_BYTES,
     ensure_user_image_meta,
@@ -53,13 +52,6 @@ from web.deps import (
     validate_session_id,
     validate_workspace_uuid,
 )
-from web.goal_runner import (
-    format_goal_status,
-    get_runner,
-    start_goal_runner,
-    stop_goal_runner,
-)
-
 from core.tool_output import resolve_tool_results_for_context
 from web.sse import (
     drain_outbox_events,
@@ -75,11 +67,11 @@ _resume_tasks: set[asyncio.Task] = set()
 
 
 def _persist_command_exchange(sm, session_key: str, content: str, reply: str) -> None:
-    """信息类命令（/help、/goal status）落盘 user/assistant 两条消息。
+    """信息类命令（/help）落盘 user/assistant 两条消息。
 
     仅在会话空闲时写：运行中的 runner 循环正在改写同一份 messages，并发
-    add_message 会打乱消息顺序。这里不认领会话 —— 控制类命令（/stop、
-    /goal pause）需要能在运行中生效，不能因为它们而阻塞。
+    add_message 会打乱消息顺序。这里不认领会话 —— 控制类命令（/stop）
+    需要能在运行中生效，不能因为它们而阻塞。
     """
     if sm is None or not _is_session_idle(session_key):
         return
@@ -341,7 +333,7 @@ def _delivery_payload(items: list[QueuedTurn]) -> dict:
 
 
 def _pump_queue(key: str) -> None:
-    """上一回合结束后的后台泵：空闲、未暂停、无待答 ask_user / goal 时启动下一批。
+    """上一回合结束后的后台泵：空闲、未暂停、无待答 ask_user 时启动下一批。
 
     与前台流的区别只在渲染路径：后台回合走 ``runner.default_sink``（全局事件
     总线），前端 ``sse-client.js`` 的 master-resume 渲染器负责显示。``claim()``
@@ -354,9 +346,6 @@ def _pump_queue(key: str) -> None:
     if runner is None:
         return
     if find_pending_ask_user(runner.session):
-        return
-    goal = get_runner(key)
-    if goal is not None and goal.is_running():
         return
     if not _claim_session_run(key):
         return
@@ -547,7 +536,6 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         help_text = """**特殊命令：**
 
 - `/help` - 显示本帮助信息
-- `/goal <目标>` - 设置长期目标并自动循环执行（`/goal status|pause|resume|clear` 管理）
 
 **工具使用：**
 直接描述你要完成的任务即可，AI 会自动选择合适的工具。
@@ -556,98 +544,6 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
         sm = _get_session(workspace_uuid, session_id)
         _persist_command_exchange(sm, session_key(workspace_uuid, session_id), content, help_text)
         return StreamingResponse(sse_stream({"type": "text", "content": help_text, "session_id": session_id}), media_type="text/event-stream")
-
-    # /goal 目标驱动循环：/goal | /goal status | /goal clear | /goal pause | /goal resume | /goal <目标>
-    if content == "/goal" or content == "/goal status":
-        runner = await _get_or_create_runner(workspace_uuid, session_id)
-        manager = get_goal_manager(runner.session.session_dir)
-        goal_text = format_goal_status(manager)
-        _persist_command_exchange(
-            runner.session, session_key(workspace_uuid, session_id), content, goal_text
-        )
-        return StreamingResponse(sse_stream({"type": "text", "content": goal_text, "session_id": session_id}), media_type="text/event-stream")
-
-    if content == "/goal clear":
-        runner = await _get_or_create_runner(workspace_uuid, session_id)
-        manager = get_goal_manager(runner.session.session_dir)
-        stop_goal_runner(session_key(workspace_uuid, session_id))  # 请求轮间停止（不中断进行中的单轮）
-        manager.clear()
-        result_text = "🗑️ 目标已清除，目标循环已停止。"
-        runner.session.add_message("user", content, flush=False)
-        runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
-        runner.session.save()
-        return StreamingResponse(sse_stream({"type": "text", "content": result_text, "session_id": session_id}), media_type="text/event-stream")
-
-    if content == "/goal pause":
-        runner = await _get_or_create_runner(workspace_uuid, session_id)
-        manager = get_goal_manager(runner.session.session_dir)
-        if not manager.exists():
-            result_text = "当前没有目标，无需暂停。"
-        else:
-            stop_goal_runner(session_key(workspace_uuid, session_id))
-            manager.pause()
-            result_text = "⏸️ 目标循环已暂停，可用 `/goal resume` 恢复。"
-        runner.session.add_message("user", content, flush=False)
-        runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
-        runner.session.save()
-        return StreamingResponse(sse_stream({"type": "text", "content": result_text, "session_id": session_id}), media_type="text/event-stream")
-
-    if content == "/goal resume":
-        runner = await _get_or_create_runner(workspace_uuid, session_id)
-        manager = get_goal_manager(runner.session.session_dir)
-        if not manager.exists():
-            result_text = "当前没有已保存的目标，请先用 `/goal <目标>` 设置目标。"
-            runner.session.add_message("user", content, flush=False)
-            runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
-            runner.session.save()
-            return StreamingResponse(sse_stream({"type": "text", "content": result_text, "session_id": session_id}), media_type="text/event-stream")
-        manager.resume()
-        # 同 /goal <目标>：先落恢复确认，再启动循环，保证顺序「命令 → 恢复确认 → 下一轮卡片」
-        confirm_text = "▶️ 已恢复目标循环，进度实时显示。"
-        runner.session.add_message("user", content, flush=False)
-        runner.session.add_message("assistant", [{"type": "text", "text": confirm_text}], flush=False)
-        runner.session.save()
-        loop = asyncio.get_running_loop()
-        # 不要覆盖 runner：start_goal_runner 返回 None（上一轮 60s 未收尾）时仍需它落提示
-        resumed = await loop.run_in_executor(None, lambda: start_goal_runner(
-            workspace_uuid, session_id, runner, manager))
-        if resumed is None:
-            result_text = "上一轮目标循环 60s 内未收尾，暂未能启动新循环，请稍后重试或 `/goal status` 查看状态。"
-            runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
-            runner.session.save()
-            return StreamingResponse(sse_stream({"type": "text", "content": result_text, "session_id": session_id}), media_type="text/event-stream")
-        return StreamingResponse(sse_stream({"type": "text", "content": confirm_text, "session_id": session_id}), media_type="text/event-stream")
-
-    if content.startswith("/goal "):
-        objective = content[len("/goal "):].strip()
-        if not objective:
-            result_text = "请输入目标内容，例如：`/goal 把 README 翻译成中文`"
-            runner = await _get_or_create_runner(workspace_uuid, session_id)
-            runner.session.add_message("user", content, flush=False)
-            runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
-            runner.session.save()
-            return StreamingResponse(sse_stream({"type": "text", "content": result_text, "session_id": session_id}), media_type="text/event-stream")
-        runner = await _get_or_create_runner(workspace_uuid, session_id)
-        manager = get_goal_manager(runner.session.session_dir)
-        manager.set(objective)
-        # 先落用户目标 + 确认文本，再启动循环：若先启动 runner，daemon 线程可能
-        # 抢先落占位消息，导致会话顺序变成「轮次卡片 → 用户目标 → 已设置」（显示错乱）
-        confirm_text = (f"🎯 已设置目标并开始执行：{objective}\n"
-                        "进度实时显示，`/goal status` 查看状态，`/goal pause` 暂停。")
-        runner.session.add_message("user", content, flush=False)
-        runner.session.add_message("assistant", [{"type": "text", "text": confirm_text}], flush=False)
-        runner.session.save()
-        loop = asyncio.get_running_loop()
-        # 同 /goal resume：不要覆盖 runner，None 分支仍需它落提示
-        resumed = await loop.run_in_executor(None, lambda: start_goal_runner(
-            workspace_uuid, session_id, runner, manager))
-        if resumed is None:
-            result_text = (f"🎯 目标已设置：{objective}\n"
-                           "但上一轮目标循环 60s 内未收尾，本次未自动启动，可用 `/goal resume` 恢复。")
-            runner.session.add_message("assistant", [{"type": "text", "text": result_text}], flush=False)
-            runner.session.save()
-            return StreamingResponse(sse_stream({"type": "text", "content": result_text, "session_id": session_id}), media_type="text/event-stream")
-        return StreamingResponse(sse_stream({"type": "text", "content": confirm_text, "session_id": session_id}), media_type="text/event-stream")
 
     # Normal message - send to runner
     # 青少年模式：时长用尽 / 时段外禁止发送新消息（进行中的回合跑到结束）。
@@ -687,11 +583,7 @@ async def send_message(workspace_uuid: str, session_id: str, request: SendMessag
     delivered: dict | None = None
     if pending_ask:
         if not _claim_session_run(key):
-            goal_runner = get_runner(key)
-            if goal_runner is not None and goal_runner.is_running():
-                error_text = "目标循环执行中，可用 `/goal pause` 暂停或 `/goal status` 查看进度"
-            else:
-                error_text = "当前会话正在执行中，请等待完成后再发送消息"
+            error_text = "当前会话正在执行中，请等待完成后再发送消息"
             return StreamingResponse(sse_stream({"type": "error", "content": error_text, "session_id": session_id}), media_type="text/event-stream")
         try:
             prepared = prepare_turn(runner, content=content, user_input=user_input)
@@ -841,16 +733,11 @@ async def stop_runner(workspace_uuid: str, session_id: str,
     runner = registry.get(key)
     is_running = getattr(runner, "is_running", None)
     runner_running = bool(is_running()) if callable(is_running) else False
-    goal = get_runner(key)
-    goal_running = goal is not None and goal.is_running()
-
-    if runner_running or goal_running:
+    if runner_running:
         stopper = getattr(runner, "stop", None)
         if callable(stopper):
-            # 目标循环在跑时同样置 master._stopped：goal 轮间检查后暂停并跳出
             stopper()
-        message = "已发送停止信号" if runner_running else "已发送停止信号（目标循环将在本轮结束后暂停）"
-        return {"success": True, "message": message,
+        return {"success": True, "message": "已发送停止信号",
                 "stopped": {"turn": True, "background": 0}}
 
     return {"success": False, "message": "master runner 当前未在运行",
@@ -968,9 +855,6 @@ async def revert_to_message(workspace_uuid: str, session_id: str, request: Rever
     # 如果 runner 存在且正在运行，拒绝操作
     if runner and runner.is_running():
         raise HTTPException(400, "Runner 正在运行中，无法撤销")
-
-    # 撤销会删除 GoalRunner 依赖的消息，先请求其停止
-    stop_goal_runner(key)
 
     msg_id = request.msg_id
 

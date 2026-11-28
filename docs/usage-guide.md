@@ -44,8 +44,6 @@ cli.cmd                   # 终端客户端（连接已运行的服务）
 | `/status` | 工作区/会话/用量与剩余额度 |
 | `/stop`、`/stop bg` | 停止当前回合 / 后台任务 |
 
-Web 额外支持 `/goal`：`/goal <目标>` 设定长期目标并自动循环执行，
-`/goal status|pause|resume|clear` 管理。
 
 ## 五、常用能力
 
