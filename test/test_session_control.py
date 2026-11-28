@@ -157,7 +157,6 @@ def test_stop_route_turn_scope(monkeypatch):
         stop=MagicMock(),
     )
     monkeypatch.setattr(routes_chat, "registry", _Registry(runner))
-    monkeypatch.setattr(routes_chat, "get_runner", lambda key: None)
 
     result = asyncio.run(routes_chat.stop_runner("ws-1", "sess-1", None))
 
@@ -222,7 +221,6 @@ def test_stop_route_turn_scope_does_not_touch_background(monkeypatch):
         stop=MagicMock(),
     )
     monkeypatch.setattr(routes_chat, "registry", _Registry(runner))
-    monkeypatch.setattr(routes_chat, "get_runner", lambda key: None)
     agent = _task("agent-1", kind="agent", runner=MagicMock())
 
     result = asyncio.run(routes_chat.stop_runner(
