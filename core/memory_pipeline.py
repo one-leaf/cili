@@ -22,6 +22,7 @@ import os
 import re
 import threading
 from functools import partial
+from pathlib import Path
 from typing import Callable
 
 from core.config import (
@@ -167,7 +168,8 @@ class _ExtractPointer:
     """每次提取后记录最后处理的消息 id；崩溃后重读 messages 仍能接续。"""
 
     def __init__(self, memory_dir: str, session_id: str):
-        self.path = os.path.join(memory_dir, ".extract", f"{session_id}.json")
+        old = Path(memory_dir) / ".extract" / f"{session_id}.json"
+        self.path = str(old) if old.is_file() else str(Path(memory_dir) / "pointer.json")
 
     def load(self) -> dict:
         try:
@@ -286,10 +288,22 @@ def run_extraction(
     """
     if not session_id:
         session_id = "session"
+    from core.workspace_layout import memory_session_state_dir
     memory_dir = str(get_workspace_data_dir(workspace_uuid) / "memory")
-    journal = Journal(memory_dir)
-    pointer = _ExtractPointer(memory_dir, session_id)
+    state_dir = str(memory_session_state_dir(workspace_uuid, session_id))
+    fresh_state = not Path(state_dir).exists()
+    journal = Journal(state_dir)
+    pointer = _ExtractPointer(state_dir, session_id)
     state = pointer.load()
+
+    # 首次在本机打开已有记忆的会话：从当前末尾开始，避免把整段历史重复提取。
+    if fresh_state and not state.get("last_msg_id") and messages:
+        store = MemoryStore(memory_dir)
+        if store.list():
+            last_id = _msg_id(messages[-1])
+            if last_id:
+                _advance_pointer(pointer, last_id)
+            return {"appended": 0, "raw": 0, "extracted": 0, "skipped": True}
 
     with _pointer_lock(memory_dir, session_id):
         new_msgs = _new_messages(messages, state.get("last_msg_id", ""))
@@ -658,8 +672,9 @@ def _split_consolidation(
     return left_ops + right_ops, right_summary or left_summary
 
 
-def run_consolidation(
+def _run_consolidation_for_journal(
     workspace_uuid: str,
+    journal_dir: str | Path,
     consolidator: Callable | None = None,
     limit: int = 20,
     max_batches: int = 1,
@@ -676,7 +691,7 @@ def run_consolidation(
     """
     memory_dir = str(get_workspace_data_dir(workspace_uuid) / "memory")
     store = MemoryStore(memory_dir)
-    journal = Journal(memory_dir)
+    journal = Journal(journal_dir)
     consolidator_fn = consolidator or partial(default_consolidator, workspace_uuid=workspace_uuid)
 
     batch_results: list[dict] = []
@@ -749,6 +764,55 @@ def run_consolidation(
     final["failed"] = [f for b in batch_results for f in b["failed"]]
     final["archived"] = [x for b in batch_results for x in b["archived"]]
     final["pending_after"] = journal.pending_count()
+    return final
+
+
+def _journal_dirs(workspace_uuid: str) -> list[Path]:
+    """旧全局 journal + runtime 下各会话 journal（存在才处理）。"""
+    memory_dir = Path(get_workspace_data_dir(workspace_uuid)) / "memory"
+    dirs: list[Path] = [memory_dir]
+    try:
+        from core.workspace_layout import workspace_runtime_dir
+        sessions = workspace_runtime_dir(workspace_uuid) / "memory" / "sessions"
+        if sessions.is_dir():
+            for child in sorted(sessions.iterdir()):
+                if child.is_dir() and (child / "journal.jsonl").is_file():
+                    dirs.append(child)
+    except OSError:
+        pass
+    return dirs
+
+
+def run_consolidation(
+    workspace_uuid: str,
+    consolidator: Callable | None = None,
+    limit: int = 20,
+    max_batches: int = 1,
+) -> dict:
+    """整合旧全局 journal 与所有会话 journal；返回聚合结果。"""
+    results = [
+        _run_consolidation_for_journal(
+            workspace_uuid, d, consolidator=consolidator,
+            limit=limit, max_batches=max_batches,
+        )
+        for d in _journal_dirs(workspace_uuid)
+    ]
+    if not results:
+        return {"processed": 0, "ops": [], "applied": [], "archived": [],
+                "pending_after": 0, "summary_len": 0}
+    final = dict(results[-1])
+    final["processed"] = sum(r.get("processed", 0) for r in results)
+    final["ops"] = [x for r in results for x in (r.get("ops") or [])]
+    final["applied"] = [x for r in results for x in (r.get("applied") or [])]
+    final["failed"] = [x for r in results for x in (r.get("failed") or [])]
+    final["archived"] = [x for r in results for x in (r.get("archived") or [])]
+    final["pending_after"] = sum(r.get("pending_after", 0) for r in results)
+    final["summary_len"] = sum(r.get("summary_len", 0) for r in results)
+    errors = [r.get("error") for r in results if r.get("error")]
+    if errors:
+        final["error"] = "; ".join(errors)
+    else:
+        final.pop("error", None)
     return final
 
 

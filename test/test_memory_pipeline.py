@@ -48,6 +48,11 @@ def _mem(projects_dir, uuid):
     return Path(projects_dir) / uuid / ".cili" / "memory"
 
 
+def _state(projects_dir, uuid, sid="s1"):
+    """返回该工作区某会话的新 runtime journal 目录。"""
+    return Path(projects_dir) / uuid / ".cili" / "runtime" / "memory" / "sessions" / sid
+
+
 def _messages():
     return [
         {"role": "user",
@@ -109,7 +114,7 @@ class TestExtraction:
         assert r["raw"] == 0
         assert r["extracted"] == 2
 
-        journal = Journal(str(_mem(projects_dir, "ws1")))
+        journal = Journal(str(_state(projects_dir, "ws1")))
         assert journal.pending_count() == 2
         recs = journal.read_pending(limit=10)
         assert recs[0]["type_guess"] == "preference"
@@ -128,7 +133,7 @@ class TestExtraction:
         r = run_extraction("ws1", "s1", _messages(), extractor=fake_extractor)
         assert r["skipped"] is True
         assert r["appended"] == 0
-        journal = Journal(str(_mem(projects_dir, "ws1")))
+        journal = Journal(str(_state(projects_dir, "ws1")))
         assert journal.pending_count() == 1
 
     def test_pointer_continues_from_last_id(self, projects_dir):
@@ -157,7 +162,7 @@ class TestExtraction:
         r = run_extraction("ws1", "s1", _messages(), extractor=broken)
         assert r["raw"] == 1
         assert r["appended"] == 1
-        journal = Journal(str(_mem(projects_dir, "ws1")))
+        journal = Journal(str(_state(projects_dir, "ws1")))
         recs = journal.read_pending(limit=10)
         assert recs[0]["raw"] is True
         # 降级原文同样掩蔽密钥
@@ -168,6 +173,18 @@ class TestExtraction:
         _ws(projects_dir, "ws1")
         r = run_extraction("ws1", "s1", [], extractor=lambda *a: {"memories": []})
         assert r["skipped"] is True
+
+    def test_first_open_with_existing_entries_skips_history(self, projects_dir):
+        _ws(projects_dir, "ws1")
+        MemoryStore(str(_mem(projects_dir, "ws1"))).store(
+            type_="fact", title="Existing", content="already consolidated",
+        )
+
+        r = run_extraction("ws1", "s1", _messages(),
+                           extractor=lambda *a: {"memories": [{"type": "fact", "title": "X", "content": "x"}]})
+
+        assert r["skipped"] is True
+        assert Journal(str(_state(projects_dir, "ws1"))).pending_count() == 0
 
 
 # ── 整合 ──────────────────────────────────────────────
