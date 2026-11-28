@@ -311,7 +311,8 @@ class OrgService:
 
             state.pop("bind_roles", None)
             # force（手动「立即同步」/登录后）跳过 ETag，强制全量拉取并重新应用模型。
-            etag = "" if force else str(state.get("config_version") or "")
+            # 组织托管配置必须每次全量物化，防止本地误改 provider/models/api_key。
+            etag = ""
             provider_key = str(state.get("provider_key") or "")
             if etag and provider_key:
                 from core.config import load_global_config
@@ -343,7 +344,7 @@ class OrgService:
                 return self.status()
             if not_modified:
                 state["workspaces"] = sync_managed_workspaces(
-                    state.get("workspaces") or []
+                    state.get("workspaces") or [], token=token
                 )
                 state["last_sync"] = time.strftime("%Y-%m-%d %H:%M:%S")
                 state["last_error"] = (

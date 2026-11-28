@@ -129,6 +129,10 @@ def apply_workspaces(
             "group_name": group_name,
             "directory": str(directory),
             "branch": branch,
+            "remote_url": remote,
+            "git_username": username,
+            "sync_mode": str(git.get("sync_mode") or "remote_wins"),
+            "memory_enabled": memory_enabled,
             "status": "ok",
             "error": "",
         }
@@ -167,21 +171,55 @@ def apply_workspaces(
     return results
 
 
-def sync_managed_workspaces(entries: list[dict]) -> list[dict]:
-    """304 时只对齐已有共享工作区的 Git，不重建索引。"""
+def sync_managed_workspaces(entries: list[dict], token: str = "") -> list[dict]:
+    """304/同步时强制恢复组织工作区 Git 配置并同步。"""
     results: list[dict] = []
     for item in entries or []:
         uuid = str(item.get("uuid") or "")
         if not uuid or not find_workspace_entry(uuid):
             continue
+        meta = get_workspace_meta(uuid) or {}
+        remote = str(item.get("remote_url") or meta.get("git_remote_url") or "")
+        branch = str(item.get("branch") or meta.get("git_branch") or "main")
+        username = str(item.get("git_username") or meta.get("git_username") or "org")
+        if not remote:
+            updated = dict(item)
+            updated["status"] = "warning"
+            updated["error"] = "共享工作区缺少远程地址，需全量配置"
+            results.append(updated)
+            continue
+        config = dict(meta)
+        config.update({
+            "git_enabled": True,
+            "git_sync_mode": "remote_wins",
+            "git_remote_url": remote,
+            "git_branch": branch,
+            "git_username": username,
+            "org_managed": True,
+        })
+        save_workspace_meta(uuid, config)
+        ok, msg = init_workspace_git(uuid)
+        if not ok:
+            updated = dict(item)
+            updated["status"] = "warning"
+            updated["error"] = msg
+            results.append(updated)
+            continue
         ensure_git_exclude(uuid)
-        branch = str(item.get("branch") or "main")
-        ok, msg = sync_remote_wins(uuid, branch)
+        set_ok, set_msg = set_git_remote(uuid, remote, username, token)
+        if not set_ok:
+            updated = dict(item)
+            updated["status"] = "warning"
+            updated["error"] = set_msg
+            results.append(updated)
+            continue
         meta = get_workspace_meta(uuid) or {}
         if meta.get("git_token"):
             meta["git_token"] = ""
             save_workspace_meta(uuid, meta)
+        ok, msg = sync_remote_wins(uuid, branch)
         updated = dict(item)
+        updated.update({"remote_url": remote, "git_username": username, "branch": branch})
         updated["status"] = "ok" if ok else "warning"
         updated["error"] = "" if ok else msg
         results.append(updated)

@@ -529,13 +529,13 @@ def test_force_sync_reapplies_model_despite_etag(org_env):
 
     service._client_factory = RecordingClient
 
-    # 普通同步带 ETag：304 时只同步工作区，不改模型。
+    # 普通同步也强制全量：改过的组织 Key 必须恢复。
     service.sync()
-    assert etags[-1] == "v1"
+    assert etags[-1] == ""
     saved = json.loads(config_mod.GLOBAL_CONFIG_PATH.read_text(encoding="utf-8"))
-    assert saved["providers"]["org-acme"]["api_key"] == "employee-key"
+    assert saved["providers"]["org-acme"]["api_key"] == "rotated-key"
 
-    # 立即同步强制全量：重新写 provider。
+    # 立即同步同样全量。
     status = service.sync(force=True)
     assert status["joined"] is True
     assert etags[-1] == ""
