@@ -35,6 +35,10 @@ class AppContext:
         except Exception as e:
             logger.warning(f"[AppContext] 初始化节点身份失败: {e}")
 
+        # 布局迁移必须在任何会读写 .cili 的服务之前；失败停止启动，避免混合状态。
+        from core.layout_migration import ensure_layout_migrated
+        ensure_layout_migrated()
+
         # 浏览器服务实例（Playwright 延迟到首次操作时启动）
         try:
             from core.browser_service import get_service

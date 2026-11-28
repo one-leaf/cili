@@ -44,7 +44,9 @@ def _isolate_workspaces_index(_test_workspace_dir):
     original = config_mod.WORKSPACES_JSON
     test_dir = str(_test_workspace_dir)
     original_root_env = os.environ.get("CILI_WORKSPACES_ROOT")
+    original_skip_migration = os.environ.get("CILI_SKIP_LAYOUT_MIGRATION")
     os.environ["CILI_WORKSPACES_ROOT"] = test_dir
+    os.environ["CILI_SKIP_LAYOUT_MIGRATION"] = "1"
     config_mod.reset_workspaces_root_cache()
 
     import core.workspace_wizard as wizard_mod
@@ -99,6 +101,10 @@ def _isolate_workspaces_index(_test_workspace_dir):
         os.environ.pop("CILI_WORKSPACES_ROOT", None)
     else:
         os.environ["CILI_WORKSPACES_ROOT"] = original_root_env
+    if original_skip_migration is None:
+        os.environ.pop("CILI_SKIP_LAYOUT_MIGRATION", None)
+    else:
+        os.environ["CILI_SKIP_LAYOUT_MIGRATION"] = original_skip_migration
     config_mod.reset_workspaces_root_cache()
     if os.path.exists(tmp_index):
         os.unlink(tmp_index)
