@@ -1,7 +1,7 @@
 """Todo 持久化与会话视图。
 
-存储：``{workspace}/.cili/tools/todo/{session_id}.json``；
-兼容旧格式（session metadata 内的 todos），读取时自动迁移。
+存储：``{workspace}/.cili/runtime/todo/{session_id}.json``；
+兼容旧 ``.cili/tools/todo/`` 与 session metadata 内的 todos。
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from core.config import get_workspace_tools_dir
+from core.workspace_layout import todo_dir as _runtime_todo_dir
 from core.fs_utils import atomic_write_text
 from core.time_utils import now_str
 
@@ -21,8 +22,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 def _get_todo_dir(workspace_uuid: str = "") -> Path:
-    """Get the todo storage directory for a workspace."""
-    return get_workspace_tools_dir(workspace_uuid) / "todo"
+    """todo 新位置：runtime/todo。"""
+    return _runtime_todo_dir(workspace_uuid)
+
+
+def _legacy_todo_dirs(workspace_uuid: str = "") -> list[Path]:
+    return [get_workspace_tools_dir(workspace_uuid) / "todo"]
+
+
+def _paths(session_id: str, workspace_uuid: str = "") -> list[Path]:
+    return [get_todo_file_path(session_id, workspace_uuid)] + [
+        d / f"{session_id}.json" for d in _legacy_todo_dirs(workspace_uuid)
+    ]
 
 
 def get_todo_file_path(session_id: str, workspace_uuid: str = "") -> Path:
@@ -41,18 +52,18 @@ def _load_todos_file(todo_file: Path) -> list[dict] | None:
 
 
 def read_todos(session_id: str, workspace_uuid: str = "") -> list[dict]:
-    """读取会话 todo 文件。"""
-    todo_file = get_todo_file_path(session_id, workspace_uuid)
-    if not todo_file.exists():
-        return []
-    return _load_todos_file(todo_file) or []
+    """读取会话 todo：优先 runtime，旧路径兼容。"""
+    for todo_file in _paths(session_id, workspace_uuid):
+        if todo_file.exists():
+            return _load_todos_file(todo_file) or []
+    return []
 
 
 def copy_todos(src_session_id: str, dst_session_id: str,
                workspace_uuid: str = "") -> bool:
     """把源会话 todo 复制给 fork 出的新会话；源不存在时返回 False。"""
-    src = get_todo_file_path(src_session_id, workspace_uuid)
-    if not src.is_file():
+    src = next((p for p in _paths(src_session_id, workspace_uuid) if p.is_file()), None)
+    if src is None:
         return False
     dst = get_todo_file_path(dst_session_id, workspace_uuid)
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -102,13 +113,14 @@ def get_todos_from_session(session: SessionStore | None, workspace_uuid: str = "
     session_id = getattr(session, 'session_id', None)
     has_file = False
     if session_id:
-        todo_file = get_todo_file_path(session_id, workspace_uuid)
-        has_file = todo_file.exists()
-        if has_file:
+        for todo_file in _paths(session_id, workspace_uuid):
+            if not todo_file.exists():
+                continue
+            has_file = True
             todos = _load_todos_file(todo_file)
             if todos is not None:
                 return todos
-            # 文件损坏：继续回退旧 metadata（合法的空列表已在上面返回）
+            # 文件损坏：继续检查旧路径/回退 metadata（合法空列表已在上面返回）
 
     # 没有独立文件或文件损坏时才回退旧格式（避免把已清空的 todo 又复活）
     if hasattr(session, 'metadata'):
