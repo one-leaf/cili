@@ -1205,16 +1205,19 @@ body {
 }
 
 .session-owner-badge {
-    display: inline-block;
-    font-size: 10px;
-    line-height: 1;
-    padding: 2px 4px;
-    margin-right: 5px;
-    border-radius: 4px;
-    color: #8a5a00;
-    background: rgba(220, 170, 80, 0.18);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    margin-right: 4px;
+    border-radius: 50%;
     vertical-align: 1px;
 }
+.session-owner-badge svg { width: 12px; height: 12px; }
+.session-owner-badge.mine { color: var(--accent-ink, #2f7d5a); background: rgba(80, 170, 120, 0.16); }
+.session-owner-badge.others { color: #a05a2c; background: rgba(210, 130, 70, 0.16); }
+.session-owner-badge.unowned { color: #6b7280; background: rgba(127, 127, 127, 0.14); }
 
 .session-channel-badge {
     display: inline-block;

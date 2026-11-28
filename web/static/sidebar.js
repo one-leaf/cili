@@ -148,15 +148,23 @@ function buildSessionRow(session) {
     const displayName = session.display_name || session.name || session.preview || '未命名';
     const preview = document.createElement('div');
     preview.className = 'session-preview';
-    // 归属徽标：他人 / 未归属；自己的会话默认不占位
-    if (session.owner_mine === false || session.owner_mine === null) {
-        const ownerBadge = document.createElement('span');
-        ownerBadge.className = 'session-owner-badge';
-        ownerBadge.textContent = session.owner_mine === false
-            ? (session.owner_user_label || session.owner_node_name || '他人')
-            : '未归属';
-        preview.appendChild(ownerBadge);
-    }
+    // 归属小图标：自己的=勾选人形，他人=人形，未归属=问号；文字只放 title。
+    const ownerState = session.owner_mine === true
+        ? 'mine'
+        : (session.owner_mine === false ? 'others' : 'unowned');
+    const ownerLabel = session.owner_mine === false
+        ? (session.owner_user_label || session.owner_node_name || session.owner_node_id || '他人')
+        : (session.owner_mine === null ? '未归属' : '我的会话');
+    const ownerIcon = ownerState === 'mine'
+        ? '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2.2"/><path d="M1.8 13.2c.5-2.2 2.1-3.4 4.2-3.4 1.5 0 2.7.6 3.4 1.8"/><path d="M11 8.6l1.4 1.4 2.4-2.4"/></svg>'
+        : (ownerState === 'others'
+            ? '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="5" r="2.4"/><path d="M3 13.2c.6-2.5 2.5-3.8 5-3.8s4.4 1.3 5 3.8"/></svg>'
+            : '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M6.2 6.2a1.9 1.9 0 1 1 3.1 1.5c-.6.5-1.1.8-1.1 1.6"/><circle cx="8" cy="11.6" r=".7" fill="currentColor" stroke="none"/></svg>');
+    const ownerBadge = document.createElement('span');
+    ownerBadge.className = `session-owner-badge ${ownerState}`;
+    ownerBadge.title = ownerLabel;
+    ownerBadge.innerHTML = ownerIcon;
+    preview.appendChild(ownerBadge);
     // 通道徽标：只标非 Web 来源（QQ/微信/终端/定时），网页会话不占位
     const channelLabel = SESSION_CHANNEL_LABELS[session.channel];
     if (channelLabel && session.channel !== 'web') {
