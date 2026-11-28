@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from core.config import get_workspace_data_dir
+from core.workspace_layout import workspace_runtime_dir
 from core.fs_utils import atomic_write_json, load_json_or_backup
 from core.workflows.model import (
     Workflow,
@@ -79,12 +80,16 @@ def workflow_path(workspace_uuid: str, workflow_id: str) -> Path:
     return workflow_dir(workspace_uuid, workflow_id) / "workflow.json"
 
 
+def runtime_dir(workspace_uuid: str, workflow_id: str) -> Path:
+    return workspace_runtime_dir(workspace_uuid) / "workflows" / workflow_id
+
+
 def state_path(workspace_uuid: str, workflow_id: str) -> Path:
-    return workflow_dir(workspace_uuid, workflow_id) / "state.json"
+    return runtime_dir(workspace_uuid, workflow_id) / "state.json"
 
 
 def runs_root(workspace_uuid: str, workflow_id: str) -> Path:
-    return workflow_dir(workspace_uuid, workflow_id) / "runs"
+    return runtime_dir(workspace_uuid, workflow_id) / "runs"
 
 
 def run_dir(workspace_uuid: str, workflow_id: str, run_id: str) -> Path:
@@ -179,7 +184,10 @@ def set_hidden(workspace_uuid: str, workflow_id: str, hidden: bool) -> Workflow:
 
 
 def load_state(workspace_uuid: str, workflow_id: str) -> WorkflowState:
-    data = load_json_or_backup(state_path(workspace_uuid, workflow_id), {})
+    path = state_path(workspace_uuid, workflow_id)
+    if not path.exists():
+        path = workflow_dir(workspace_uuid, workflow_id) / "state.json"
+    data = load_json_or_backup(path, {})
     return WorkflowState.from_dict(data)
 
 
@@ -192,6 +200,9 @@ def delete_workflow(workspace_uuid: str, workflow_id: str) -> bool:
     if not directory.is_dir():
         return False
     shutil.rmtree(directory)
+    runtime = runtime_dir(workspace_uuid, workflow_id)
+    if runtime.is_dir():
+        shutil.rmtree(runtime, ignore_errors=True)
     return True
 
 

@@ -15,6 +15,7 @@ import threading
 from pathlib import Path
 
 from core.config import get_workspace_data_dir
+from core.workspace_layout import workspace_runtime_dir
 from core.cron.model import Job, JobState
 from core.fs_utils import atomic_write_json, load_json_or_backup
 
@@ -53,6 +54,10 @@ def job_path(workspace_uuid: str, job_id: str) -> Path:
 
 
 def state_path(workspace_uuid: str, job_id: str) -> Path:
+    return workspace_runtime_dir(workspace_uuid) / "cron" / job_id / "state.json"
+
+
+def legacy_state_path(workspace_uuid: str, job_id: str) -> Path:
     return job_dir(workspace_uuid, job_id) / "state.json"
 
 
@@ -109,10 +114,15 @@ def delete_job(workspace_uuid: str, job_id: str) -> None:
     path = job_dir(workspace_uuid, job_id)
     if path.exists():
         shutil.rmtree(path)
+    runtime = state_path(workspace_uuid, job_id).parent
+    if runtime.is_dir():
+        shutil.rmtree(runtime, ignore_errors=True)
 
 
 def load_state(workspace_uuid: str, job_id: str) -> JobState:
     path = state_path(workspace_uuid, job_id)
+    if not path.exists():
+        path = legacy_state_path(workspace_uuid, job_id)
     if not path.exists():
         return JobState()
     try:
