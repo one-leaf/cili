@@ -125,8 +125,16 @@ def test_find_limit_reports_truncation(tools):
     for i in range(3):
         _store(t, f"limit-probe-{i}", "same body", title=f"Limit {i}")
     result = t.execute(action="find", query="limit-probe", limit=1)
-    assert "showing first 1" in result.output
+    assert "Found 3 match(es)" in result.output
+    assert "showing 1" in result.output
     assert "limit-probe-0" in result.output
+
+    beyond = t.execute(action="find", query="limit-probe", offset=99)
+    assert "offset 99" in beyond.output
+
+    zero = t.execute(action="find", query="limit-probe", limit=0)
+    assert zero.error
+    assert "limit must be > 0" in zero.output
 
 
 def test_list_limit_reports_total(tools):

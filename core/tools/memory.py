@@ -213,7 +213,10 @@ class MemoryTool(Tool):
         query = str(kwargs.get("query", "")).strip()
         if not query:
             return ToolResult("Error: query is required for find", error=True)
-        limit = int(kwargs.get("limit") or 20)
+        limit_raw = kwargs.get("limit")
+        limit = 20 if limit_raw in (None, "") else int(limit_raw)
+        if limit <= 0:
+            return ToolResult("Error: limit must be > 0", error=True)
         offset = max(0, int(kwargs.get("offset") or 0))
         results = self.store.find(
             query=query,
@@ -223,11 +226,23 @@ class MemoryTool(Tool):
             offset=offset,
         )
         if not results:
+            if offset:
+                return ToolResult(
+                    f"No memory matches for '{query}' at offset {offset}; "
+                    "offset may be beyond the result set."
+                )
             return ToolResult(
                 f"No memory matches for '{query}'. "
                 "Use the 'store' action to create it if worth keeping."
             )
-        lines = [f"Found {len(results)} match(es) for '{query}':", ""]
+        total = len(self.store.find(
+            query=query,
+            type_=kwargs.get("memory_type"),
+            status=kwargs.get("status"),
+            limit=None,
+            offset=0,
+        ))
+        lines = [f"Found {total} match(es) for '{query}' (showing {len(results)}):", ""]
         for entry in results:
             lines.append(f"[{entry['type']}] {entry.get('title', entry['name'])} — {entry.get('description', '')}")
             lines.append(f"  name: {entry['name']}")
@@ -238,9 +253,9 @@ class MemoryTool(Tool):
             note = self.store.stale_note(entry)
             if note:
                 lines.append(f"  {note}")
-        if len(results) >= limit:
+        if total > offset + len(results):
             lines.append("")
-            lines.append(f"(showing first {limit}; use limit/offset to see more)")
+            lines.append(f"(showing {len(results)}; use limit/offset to see more)")
         lines.append("")
         lines.append('Hint: use memory(action="read", name="<name>") to read an entry\'s full body.')
         return ToolResult(UNTRUSTED_DATA_BEGIN + "\n".join(lines) + UNTRUSTED_DATA_END)
@@ -319,7 +334,10 @@ class MemoryTool(Tool):
         all_results = self.store.list(type_=kwargs.get("memory_type"), status=kwargs.get("status"))
         if not all_results:
             return ToolResult("No memory entries.")
-        limit = int(kwargs.get("limit") or 100)
+        limit_raw = kwargs.get("limit")
+        limit = 100 if limit_raw in (None, "") else int(limit_raw)
+        if limit <= 0:
+            return ToolResult("Error: limit must be > 0", error=True)
         offset = max(0, int(kwargs.get("offset") or 0))
         results = all_results[offset:offset + max(0, limit)]
         lines = [f"{len(all_results)} memory entr{'y' if len(all_results) == 1 else 'ies'}:"]

@@ -106,6 +106,10 @@ async def update_memory_entry(workspace_uuid: str, name: str, request: UpdateMem
     """编辑条目字段。"""
     csrf_protect(request_raw)
     _validate_memory_name(name)
+    if all(value is None for value in (
+        request.title, request.description, request.tags, request.content,
+    )):
+        raise HTTPException(status_code=400, detail="没有需要更新的字段")
     md = _memory_dir(workspace_uuid)
     store = MemoryStore(md)
     try:
